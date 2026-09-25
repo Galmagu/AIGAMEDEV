@@ -36,6 +36,9 @@
   .sub { color: #aab; margin: 0 0 1.6cqw; }
   .help { list-style: none; padding: 0; margin: 0 0 1.4cqw; line-height: 1.9; }
   .help b { color: #ffd23f; }
+  .help.small { color: #aab; font-size: 1.1cqw; }
+  .passives { display: flex; flex-wrap: wrap; gap: 0.6cqw; justify-content: center; margin: 0 0 1.2cqw; }
+  .passives span { padding: 0.2cqw 0.8cqw; border: 0.1cqw solid #7bd88f; border-radius: 0.4cqw; color: #7bd88f; }
   .odds { margin: 0 0 2cqw; color: #aab; }
   .mvp { margin: 0 0 1cqw; }
   .mvp b { color: #ffd23f; }
@@ -118,9 +121,58 @@ const GEM_CAP = 500;
 // 레벨 L → L+1 필요 경험치 = first + (L - 1) × step
 const XP_CURVE = { first: 5, step: 8 };
 
-const ENEMY_CAP = 300;
-const WALKER = { hp: 10, speed: 60, damage: 5, radius: 11, xp: 1 };
+const ENEMY_CAP = 300; // 일반 몬스터만 센다 (네임드/보스 제외)
 const ENEMY_HP_GROWTH_PER_MIN = 0.12;
+
+// 일반 몬스터. kb = 넉백 배율 (낮을수록 안 밀림)
+const ENEMY_TYPES = {
+  walker: { hp: 10, speed: 60, damage: 5, radius: 11, xp: 1, kb: 1, color: '#5f8f3e', edge: '#34521f' },
+  runner: { hp: 5, speed: 130, damage: 4, radius: 9, xp: 1, kb: 1.2, color: '#a3c45a', edge: '#5b7327' },
+  fatty: { hp: 50, speed: 40, damage: 10, radius: 17, xp: 5, kb: 0.3, color: '#40602c', edge: '#223417' },
+};
+
+// 시간대별 일반 몬스터 구성 비율 (from = 초)
+const WAVES = [
+  { from: 0, weights: { walker: 1 } },
+  { from: 60, weights: { walker: 0.7, runner: 0.3 } },
+  { from: 150, weights: { walker: 0.55, runner: 0.3, fatty: 0.15 } },
+];
+
+// 네임드: 처치 시 경험치 다량 + 패시브 3택1
+const NAMED = {
+  times: [60, 120, 240, 300, 420],
+  names: ['정육점 주인', '배달부', '경비원', '택시기사', '청소부'],
+  hpMul: 30, // 그 시점 걷는 좀비 HP × 30
+  radius: 22,
+  speed: 70,
+  damage: 15,
+  kb: 0.2,
+  gems: 4, // 경험치 조각 4개 × 10 = 40
+  gemValue: 10,
+  color: '#b5483b',
+  edge: '#5a1f18',
+  charge: { cd: 5, windup: 0.8, dashSpeed: 460, dashTime: 0.5, range: 380 },
+};
+
+// 보스: 전용 HP 바, 처치 시 경험치 대량 + 부활/대강화 3택1
+const BOSS = {
+  list: [
+    { time: 180, name: '거대 도살자', hpMul: 150 },
+    { time: 360, name: '변이체 원장', hpMul: 300 },
+  ],
+  warn: 3, // 등장 몇 초 전 경고
+  radius: 40,
+  speed: 55,
+  damage: 25,
+  kb: 0.05,
+  gems: 10, // 10개 × 20 = 200
+  gemValue: 20,
+  spawnRateMul: 0.5, // 보스 생존 중 일반 스폰량
+  color: '#7a1f2b',
+  edge: '#2a0a0e',
+  charge: { cd: 4, windup: 1.0, dashSpeed: 520, dashTime: 0.6, range: 450 },
+  summon: { cd: 8, count: 8, radius: 110 },
+};
 
 const SPAWN = {
   baseRate: 1.2, // 초당 스폰 수 (0분)
@@ -138,13 +190,17 @@ const TIER_WEIGHTS = [
   ['legendary', 10],
 ];
 
-const WEAPON_MAX_LEVEL = 5;
+const WEAPON_MAX_LEVEL = 5; // 레벨업으로 도달 가능한 최대
+const WEAPON_BOSS_MAX_LEVEL = 7; // 보스 대강화로만 도달
+const BOSS_UPGRADE_LEVELS = 2;
 const WEAPON_DMG_PER_LEVEL = 0.25;
+
+const PASSIVE_MAX_LEVEL = 5;
 
 const GRID_CELL = 64;
 const MAX_DAMAGE_TEXTS = 120;
 
-return { VIEW_W, VIEW_H, STEP, RUN_TIME, MAX_COMPANIONS, LEADER, COMPANION, GANG, HIT_IFRAME, PICKUP_RADIUS, GEM_CAP, XP_CURVE, ENEMY_CAP, WALKER, ENEMY_HP_GROWTH_PER_MIN, SPAWN, TIER_WEIGHTS, WEAPON_MAX_LEVEL, WEAPON_DMG_PER_LEVEL, GRID_CELL, MAX_DAMAGE_TEXTS };
+return { VIEW_W, VIEW_H, STEP, RUN_TIME, MAX_COMPANIONS, LEADER, COMPANION, GANG, HIT_IFRAME, PICKUP_RADIUS, GEM_CAP, XP_CURVE, ENEMY_CAP, ENEMY_HP_GROWTH_PER_MIN, ENEMY_TYPES, WAVES, NAMED, BOSS, SPAWN, TIER_WEIGHTS, WEAPON_MAX_LEVEL, WEAPON_BOSS_MAX_LEVEL, BOSS_UPGRADE_LEVELS, WEAPON_DMG_PER_LEVEL, PASSIVE_MAX_LEVEL, GRID_CELL, MAX_DAMAGE_TEXTS };
 })();
 
 // ── src/spatial.js ──
@@ -435,6 +491,40 @@ const LEVEL_BONUS_TEXT = {
 return { TIERS, WEAPONS, rollTier, rollWeapon, nominalDps, LEVEL_BONUS_TEXT };
 })();
 
+// ── src/data/passives.js ──
+__mod["src/data/passives.js"] = (() => {
+// 패시브: 네임드 처치 보상. 갱 전원(나중에 합류하는 동료 포함)에게 적용된다.
+const PASSIVES = [
+  { id: 'speed', name: '운동화', desc: '이동 속도 +8%' },
+  { id: 'magnet', name: '자석', desc: '경험치 획득 거리 +25%' },
+  { id: 'power', name: '근력', desc: '무기 피해 +10%' },
+  { id: 'haste', name: '손놀림', desc: '공격 쿨다운 -8%' },
+  { id: 'armor', name: '방탄조끼', desc: '받는 피해 -1' },
+  { id: 'vital', name: '체력단련', desc: '최대 HP +15%' },
+  { id: 'regen', name: '붕대', desc: '초당 HP 0.5 재생' },
+  { id: 'study', name: '공부', desc: '경험치 획득량 +10%' },
+];
+
+const PASSIVE_BY_ID = Object.fromEntries(PASSIVES.map((p) => [p.id, p]));
+
+// 패시브 레벨 → 게임에서 쓰는 배율/수치
+function computeMods(levels) {
+  const l = (id) => levels[id] || 0;
+  return {
+    speed: 1 + 0.08 * l('speed'),
+    pickup: 1 + 0.25 * l('magnet'),
+    dmg: 1 + 0.1 * l('power'),
+    cd: Math.pow(0.92, l('haste')),
+    armor: l('armor'),
+    hpMul: 1 + 0.15 * l('vital'),
+    regen: 0.5 * l('regen'),
+    xp: 1 + 0.1 * l('study'),
+  };
+}
+
+return { PASSIVES, PASSIVE_BY_ID, computeMods };
+})();
+
 // ── src/data/names.js ──
 __mod["src/data/names.js"] = (() => {
 const { pick } = __mod["src/util.js"];
@@ -459,11 +549,11 @@ return { makeName };
 // ── src/weapons.js ──
 __mod["src/weapons.js"] = (() => {
 // 무기 런타임: 레벨 반영 스탯 계산 + 쿨다운 관리 + 유형별 발동 처리
-const { WEAPON_MAX_LEVEL, WEAPON_DMG_PER_LEVEL } = __mod["src/config.js"];
+const { WEAPON_DMG_PER_LEVEL } = __mod["src/config.js"];
 const { DEG, rand, angleDiff, segDist2 } = __mod["src/util.js"];
 function computeStats(def, level) {
   const s = { ...def.stats };
-  const bonus = (level >= 3 ? 1 : 0) + (level >= 5 ? 1 : 0);
+  const bonus = (level >= 3 ? 1 : 0) + (level >= 5 ? 1 : 0) + (level >= 7 ? 1 : 0);
   s.dmg *= 1 + WEAPON_DMG_PER_LEVEL * (level - 1);
   switch (def.type) {
     case 'projectile':
@@ -500,8 +590,8 @@ function createWeapon(def) {
   };
 }
 
-function setWeaponLevel(w, level) {
-  w.level = Math.min(level, WEAPON_MAX_LEVEL);
+function setWeaponLevel(w, level, cap) {
+  w.level = Math.min(level, cap);
   w.stats = computeStats(w.def, w.level);
 }
 
@@ -529,7 +619,7 @@ function updateWeapon(game, u, dt) {
     return;
   }
   fire(game, u, w, target);
-  w.cd += s.cd;
+  w.cd += s.cd * game.mods.cd;
   if (s.burst > 1) {
     w.burstLeft = s.burst - 1;
     w.burstTimer = s.burstInterval;
@@ -627,10 +717,12 @@ __mod["src/game.js"] = (() => {
 const C = __mod["src/config.js"];
 const { SpatialHash } = __mod["src/spatial.js"];
 const { rollWeapon, TIERS } = __mod["src/data/weapons.js"];
+const { PASSIVES, PASSIVE_BY_ID, computeMods } = __mod["src/data/passives.js"];
 const { makeName } = __mod["src/data/names.js"];
 const { createWeapon, setWeaponLevel, updateWeapon } = __mod["src/weapons.js"];
 const { TAU, rand, shuffle, segDist2, compact } = __mod["src/util.js"];
-// state: title → playing ⇄ (levelup | paused) → gameover | victory
+// state: title → playing ⇄ (choice | paused) → gameover | victory
+// choice = 레벨업 / 네임드 패시브 / 보스 보상 선택 중 (게임 일시정지)
 class Game {
   constructor(ui, input) {
     this.ui = ui;
@@ -649,20 +741,33 @@ class Game {
     return this.units[0];
   }
 
+  // 먼저 나온 보스가 안 죽었는데 다음 보스가 나올 수 있어서 목록으로 관리
+  get boss() {
+    return this.bosses[0] || null;
+  }
+
   reset() {
     this.state = 'title';
     this.time = 0;
     this.level = 1;
     this.xp = 0;
     this.xpNeed = C.XP_CURVE.first;
-    this.pendingLevels = 0;
+    this.queue = []; // 대기 중인 선택창: { kind: 'level' | 'passive' | 'boss', ... }
     this.kills = 0;
+    this.namedKills = 0;
+    this.bossKills = 0;
     this.nextId = 1;
     this.units = []; // 살아있는 갱. units[0] = 주인공
     this.roster = []; // 거쳐간 모든 유닛 (결과 화면용)
-    this.dead = []; // 사망 명단 (M3 부활용)
+    this.dead = []; // 사망 명단 (보스 보상으로 부활)
     this.usedNames = new Set();
+    this.passives = {}; // id → 레벨
+    this.mods = computeMods(this.passives);
     this.enemies = [];
+    this.normalCount = 0;
+    this.bosses = [];
+    this.bossWarn = null;
+    this.events = this.buildSchedule();
     this.projectiles = [];
     this.lobs = [];
     this.zones = [];
@@ -676,6 +781,17 @@ class Game {
     this.camY = 0;
   }
 
+  // 네임드/보스 등장 시간표
+  buildSchedule() {
+    const ev = [];
+    C.NAMED.times.forEach((t, i) => ev.push({ t, run: () => this.spawnNamed(C.NAMED.names[i % C.NAMED.names.length]) }));
+    for (const b of C.BOSS.list) {
+      ev.push({ t: b.time - C.BOSS.warn, run: () => this.warnBoss(b) });
+      ev.push({ t: b.time, run: () => this.spawnBoss(b) });
+    }
+    return ev.sort((a, b) => a.t - b.t);
+  }
+
   start() {
     this.reset();
     const leader = this.createUnit(true, rollWeapon(), 0, 0);
@@ -685,16 +801,21 @@ class Game {
     this.ui.hide();
   }
 
+  baseHp(u) {
+    return u.isLeader ? C.LEADER.hp : C.COMPANION.hp;
+  }
+
   createUnit(isLeader, def, x, y, name) {
     const base = isLeader ? C.LEADER : C.COMPANION;
+    const maxHp = Math.round(base.hp * this.mods.hpMul);
     const u = {
       id: this.nextId++,
       isLeader,
       name: isLeader ? '두목 (나)' : name || makeName(this.usedNames),
       x, y, vx: 0, vy: 0,
       r: base.radius,
-      hp: base.hp,
-      maxHp: base.hp,
+      hp: maxHp,
+      maxHp,
       iframe: 0,
       flash: 0,
       joinFx: isLeader ? 0 : 0.6,
@@ -718,6 +839,8 @@ class Game {
       if (inp.consume('KeyI')) this.debug.invincible = !this.debug.invincible;
       if (inp.consume('KeyL')) this.gainXp(this.xpNeed - this.xp);
       if (inp.consume('KeyT')) this.time = Math.min(C.RUN_TIME - 1, this.time + 30);
+      if (inp.consume('KeyN')) this.spawnNamed('디버그 네임드');
+      if (inp.consume('KeyB') && !this.boss) this.spawnBoss(C.BOSS.list[0]);
     }
     inp.endFrame();
   }
@@ -746,6 +869,8 @@ class Game {
       this.finish(true);
       return;
     }
+    while (this.events.length && this.events[0].t <= this.time) this.events.shift().run();
+    if (this.bossWarn && this.time >= this.bossWarn.until) this.bossWarn = null;
 
     this.updateLeader(dt);
     this.updateCompanions(dt);
@@ -766,15 +891,20 @@ class Game {
     this.updateFx(dt);
     this.shake = Math.max(0, this.shake - dt * 30);
 
-    if (this.pendingLevels > 0) this.openLevelUp();
+    if (this.queue.length) this.openNext();
   }
 
   // ─── 갱 ─────────────────────────────────────────────────
+  leaderSpeed() {
+    return C.LEADER.speed * this.mods.speed;
+  }
+
   updateLeader(dt) {
     const L = this.leader;
     const a = this.input.axis();
-    L.vx = a.x * C.LEADER.speed;
-    L.vy = a.y * C.LEADER.speed;
+    const speed = this.leaderSpeed();
+    L.vx = a.x * speed;
+    L.vy = a.y * speed;
     L.x += L.vx * dt;
     L.y += L.vy * dt;
     this.camX = L.x;
@@ -786,7 +916,7 @@ class Game {
   updateCompanions(dt) {
     const L = this.leader;
     const G = C.GANG;
-    const maxSpeed = C.LEADER.speed * G.speedMul;
+    const maxSpeed = this.leaderSpeed() * G.speedMul;
     const a = Math.min(1, dt * G.accel);
     for (let i = 1; i < this.units.length; i++) {
       const u = this.units[i];
@@ -833,13 +963,14 @@ class Game {
     if (u.iframe > 0) u.iframe -= dt;
     if (u.flash > 0) u.flash -= dt;
     if (u.joinFx > 0) u.joinFx -= dt;
+    if (this.mods.regen > 0 && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + this.mods.regen * dt);
   }
 
   contactDamage() {
     // 뒤에서부터 돌아야 동료가 죽어서 빠져도 안전
     for (let i = this.units.length - 1; i >= 0; i--) {
       const u = this.units[i];
-      const list = this.queryRadius(u.x, u.y, u.r + 16, this.tmp);
+      const list = this.queryRadius(u.x, u.y, u.r + C.BOSS.radius, this.tmp);
       let hitBy = null;
       for (let k = 0; k < list.length; k++) {
         const e = list[k];
@@ -853,7 +984,7 @@ class Game {
         const d = Math.sqrt(d2) || 1;
         e.x += (dx / d) * (rr - d);
         e.y += (dy / d) * (rr - d);
-        if (!hitBy) hitBy = e;
+        if (!hitBy || e.damage > hitBy.damage) hitBy = e;
       }
       if (hitBy && u.iframe <= 0) {
         this.hurtUnit(u, hitBy.damage);
@@ -864,7 +995,7 @@ class Game {
 
   hurtUnit(u, dmg) {
     if (this.debug.invincible) return;
-    u.hp -= dmg;
+    u.hp -= Math.max(1, dmg - this.mods.armor);
     u.iframe = C.HIT_IFRAME;
     u.flash = 0.15;
     if (u.isLeader) this.shake = Math.max(this.shake, 6);
@@ -884,47 +1015,113 @@ class Game {
     this.notice(`${u.name} 사망`, '#ff6b6b');
   }
 
-  // ─── 적 ─────────────────────────────────────────────────
+  // ─── 적 스폰 ────────────────────────────────────────────
   spawnRing() {
     return Math.hypot(C.VIEW_W / 2, C.VIEW_H / 2) + C.SPAWN.ringMargin;
+  }
+
+  ringPos() {
+    const L = this.leader;
+    const ang = rand(0, TAU);
+    const r = this.spawnRing();
+    return { x: L.x + Math.cos(ang) * r, y: L.y + Math.sin(ang) * r };
+  }
+
+  hpScale() {
+    return 1 + C.ENEMY_HP_GROWTH_PER_MIN * (this.time / 60);
   }
 
   spawnEnemies(dt) {
     const min = this.time / 60;
     const S = C.SPAWN;
-    this.spawnAcc += (S.baseRate + S.ratePerMin * min) * dt;
+    const mul = this.boss ? C.BOSS.spawnRateMul : 1;
+    this.spawnAcc += (S.baseRate + S.ratePerMin * min) * mul * dt;
     while (this.spawnAcc >= 1) {
       this.spawnAcc -= 1;
-      this.spawnWalker();
+      this.spawnNormal();
     }
-    const minAlive = S.baseMinAlive + S.minAlivePerMin * min;
-    for (let guard = 0; guard < 10 && this.enemies.length < minAlive; guard++) this.spawnWalker();
+    const minAlive = (S.baseMinAlive + S.minAlivePerMin * min) * mul;
+    for (let guard = 0; guard < 10 && this.normalCount < minAlive; guard++) this.spawnNormal();
   }
 
-  spawnWalker() {
-    if (this.enemies.length >= C.ENEMY_CAP) return;
-    const L = this.leader;
-    const W = C.WALKER;
-    const ang = rand(0, TAU);
-    const r = this.spawnRing();
-    const hp = W.hp * (1 + C.ENEMY_HP_GROWTH_PER_MIN * (this.time / 60));
-    this.enemies.push({
+  pickNormalType() {
+    let wave = C.WAVES[0];
+    for (const w of C.WAVES) if (this.time >= w.from) wave = w;
+    let r = Math.random();
+    for (const [type, w] of Object.entries(wave.weights)) {
+      if ((r -= w) < 0) return type;
+    }
+    return 'walker';
+  }
+
+  makeEnemy(x, y, props) {
+    const e = {
       id: this.nextId++,
-      x: L.x + Math.cos(ang) * r,
-      y: L.y + Math.sin(ang) * r,
-      kbx: 0, kby: 0,
-      hp, maxHp: hp,
-      speed: W.speed * rand(0.9, 1.1),
-      damage: W.damage,
-      r: W.radius,
-      xp: W.xp,
+      x, y, kbx: 0, kby: 0,
       target: null,
       retarget: rand(0, 0.25),
       flash: 0,
       dead: false,
+      mode: 'chase',
+      modeT: 0,
+      dirX: 0, dirY: 0,
+      charge: null,
+      summon: null,
+      ...props,
+    };
+    e.maxHp = e.hp;
+    if (e.charge) e.chargeCd = e.charge.cd * 0.6;
+    if (e.summon) e.summonCd = e.summon.cd * 0.5;
+    this.enemies.push(e);
+    return e;
+  }
+
+  spawnNormal(x, y) {
+    if (this.normalCount >= C.ENEMY_CAP) return;
+    const type = x === undefined ? this.pickNormalType() : 'walker';
+    const T = C.ENEMY_TYPES[type];
+    if (x === undefined) ({ x, y } = this.ringPos());
+    this.normalCount++;
+    this.makeEnemy(x, y, {
+      kind: 'normal', type,
+      hp: T.hp * this.hpScale(),
+      speed: T.speed * rand(0.9, 1.1),
+      damage: T.damage, r: T.radius, xp: T.xp, kb: T.kb,
     });
   }
 
+  spawnNamed(name) {
+    const N = C.NAMED;
+    const { x, y } = this.ringPos();
+    this.makeEnemy(x, y, {
+      kind: 'named', name,
+      hp: C.ENEMY_TYPES.walker.hp * this.hpScale() * N.hpMul,
+      speed: N.speed, damage: N.damage, r: N.radius, kb: N.kb,
+      charge: N.charge,
+    });
+    this.notice(`네임드 출현: ${name}`, N.color);
+  }
+
+  warnBoss(b) {
+    this.bossWarn = { name: b.name, until: this.time + C.BOSS.warn };
+  }
+
+  spawnBoss(b) {
+    const B = C.BOSS;
+    const { x, y } = this.ringPos();
+    const boss = this.makeEnemy(x, y, {
+      kind: 'boss', name: b.name,
+      hp: C.ENEMY_TYPES.walker.hp * this.hpScale() * b.hpMul,
+      speed: B.speed, damage: B.damage, r: B.radius, kb: B.kb,
+      charge: B.charge, summon: B.summon,
+    });
+    this.bosses.push(boss);
+    this.bossWarn = null;
+    this.shake = Math.max(this.shake, 10);
+    this.notice(`보스 출현: ${b.name}`, '#ff6b6b');
+  }
+
+  // ─── 적 AI ──────────────────────────────────────────────
   nearestUnit(x, y) {
     let best = null;
     let bestD2 = Infinity;
@@ -943,10 +1140,11 @@ class Game {
     const L = this.leader;
     const relocate2 = C.SPAWN.relocateDist ** 2;
     const kbDecay = Math.exp(-8 * dt);
-    for (let i = 0; i < this.enemies.length; i++) {
+    const n = this.enemies.length; // 소환으로 늘어난 적은 다음 프레임부터
+    for (let i = 0; i < n; i++) {
       const e = this.enemies[i];
       e.retarget -= dt;
-      if (e.retarget <= 0 || !e.target || !e.target.alive) {
+      if (e.mode === 'chase' && (e.retarget <= 0 || !e.target || !e.target.alive)) {
         e.target = this.nearestUnit(e.x, e.y);
         e.retarget = 0.25;
       }
@@ -954,8 +1152,52 @@ class Game {
       const dx = t.x - e.x;
       const dy = t.y - e.y;
       const d = Math.hypot(dx, dy) || 1;
-      e.x += (dx / d) * e.speed * dt + e.kbx * dt;
-      e.y += (dy / d) * e.speed * dt + e.kby * dt;
+
+      // 돌진: 추적 → 예고(정지) → 직선 돌진 → 추적
+      let vx = (dx / d) * e.speed;
+      let vy = (dy / d) * e.speed;
+      if (e.charge) {
+        const c = e.charge;
+        if (e.mode === 'chase') {
+          e.chargeCd -= dt;
+          if (e.chargeCd <= 0 && d < c.range) {
+            e.mode = 'windup';
+            e.modeT = c.windup;
+            e.dirX = dx / d;
+            e.dirY = dy / d;
+          }
+        } else if (e.mode === 'windup') {
+          vx = vy = 0;
+          e.modeT -= dt;
+          if (e.modeT <= 0) {
+            e.mode = 'dash';
+            e.modeT = c.dashTime;
+          }
+        } else {
+          vx = e.dirX * c.dashSpeed;
+          vy = e.dirY * c.dashSpeed;
+          e.modeT -= dt;
+          if (e.modeT <= 0) {
+            e.mode = 'chase';
+            e.chargeCd = c.cd;
+          }
+        }
+      }
+      if (e.summon) {
+        e.summonCd -= dt;
+        if (e.summonCd <= 0) {
+          e.summonCd = e.summon.cd;
+          const s = e.summon;
+          for (let k = 0; k < s.count; k++) {
+            const a = (k / s.count) * TAU;
+            this.spawnNormal(e.x + Math.cos(a) * s.radius, e.y + Math.sin(a) * s.radius);
+          }
+          this.addFx('explosion', e.x, e.y, { radius: s.radius, color: C.BOSS.color, life: 0.4 });
+        }
+      }
+
+      e.x += (vx + e.kbx) * dt;
+      e.y += (vy + e.kby) * dt;
       e.kbx *= kbDecay;
       e.kby *= kbDecay;
       if (e.flash > 0) e.flash -= dt;
@@ -969,6 +1211,10 @@ class Game {
         const r = this.spawnRing();
         e.x = L.x - (lx / ld) * r;
         e.y = L.y - (ly / ld) * r;
+        if (e.mode !== 'chase') {
+          e.mode = 'chase';
+          e.chargeCd = e.charge.cd;
+        }
       }
     }
   }
@@ -978,11 +1224,11 @@ class Game {
     for (let i = 0; i < this.enemies.length; i++) this.grid.insert(this.enemies[i]);
   }
 
-  // 적끼리 겹침 완화 (완전한 물리는 아님)
+  // 적끼리 겹침 완화. 큰 적일수록 덜 밀린다.
   separateEnemies() {
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
-      const list = this.queryRadius(e.x, e.y, e.r * 2 + 2, this.tmp);
+      const list = this.queryRadius(e.x, e.y, e.r + C.BOSS.radius, this.tmp);
       for (let k = 0; k < list.length; k++) {
         const o = list[k];
         if (o.id <= e.id) continue; // 쌍마다 한 번만
@@ -992,11 +1238,12 @@ class Game {
         const d2 = dx * dx + dy * dy;
         if (d2 >= rr * rr || d2 < 0.0001) continue;
         const d = Math.sqrt(d2);
-        const push = (rr - d) * 0.25;
-        e.x -= (dx / d) * push;
-        e.y -= (dy / d) * push;
-        o.x += (dx / d) * push;
-        o.y += (dy / d) * push;
+        const push = (rr - d) * 0.5;
+        const we = (o.r * o.r) / (e.r * e.r + o.r * o.r); // e가 밀리는 비율
+        e.x -= (dx / d) * push * we;
+        e.y -= (dy / d) * push * we;
+        o.x += (dx / d) * push * (1 - we);
+        o.y += (dy / d) * push * (1 - we);
       }
     }
   }
@@ -1015,18 +1262,38 @@ class Game {
 
   damageEnemy(e, dmg, owner, kx, ky, knock) {
     if (e.dead) return;
+    dmg *= this.mods.dmg;
     owner.dmgDealt += Math.min(dmg, e.hp);
     e.hp -= dmg;
     e.flash = 0.08;
     if (knock) {
-      e.kbx += kx * knock;
-      e.kby += ky * knock;
+      e.kbx += kx * knock * e.kb;
+      e.kby += ky * knock * e.kb;
     }
     this.addText(e.x, e.y - e.r, dmg);
-    if (e.hp <= 0) {
-      e.dead = true;
-      this.kills++;
+    if (e.hp <= 0) this.killEnemy(e);
+  }
+
+  killEnemy(e) {
+    e.dead = true;
+    this.kills++;
+    if (e.kind === 'normal') {
+      this.normalCount--;
       this.dropGem(e.x, e.y, e.xp);
+    } else if (e.kind === 'named') {
+      this.namedKills++;
+      this.scatterGems(e.x, e.y, C.NAMED.gems, C.NAMED.gemValue);
+      this.addFx('explosion', e.x, e.y, { radius: 60, color: C.NAMED.color, life: 0.5 });
+      this.notice(`${e.name} 처치!`, '#ffd23f');
+      this.queue.push({ kind: 'passive', from: e.name });
+    } else {
+      this.bossKills++;
+      this.bosses.splice(this.bosses.indexOf(e), 1);
+      this.scatterGems(e.x, e.y, C.BOSS.gems, C.BOSS.gemValue);
+      this.addFx('explosion', e.x, e.y, { radius: 160, color: '#ffd23f', life: 0.8 });
+      this.shake = Math.max(this.shake, 12);
+      this.notice(`${e.name} 처치!`, '#ffd23f');
+      this.queue.push({ kind: 'boss', from: e.name });
     }
   }
 
@@ -1056,7 +1323,7 @@ class Game {
       const p = this.projectiles[i];
       const nx = p.x + p.vx * dt;
       const ny = p.y + p.vy * dt;
-      const pad = p.r + 16;
+      const pad = p.r + C.BOSS.radius;
       // 이번 프레임 이동 경로(선분) 전체로 판정해서 빠른 탄이 적을 뚫고 지나가지 않게
       const list = this.queryRect(
         Math.min(p.x, nx) - pad, Math.min(p.y, ny) - pad,
@@ -1120,7 +1387,7 @@ class Game {
       z.timer -= dt;
       if (z.timer <= 0) {
         z.timer += z.tick;
-        const list = this.queryRadius(z.x, z.y, z.r + 16, this.tmp);
+        const list = this.queryRadius(z.x, z.y, z.r + C.BOSS.radius, this.tmp);
         for (let k = 0; k < list.length; k++) {
           const e = list[k];
           if (e.dead) continue;
@@ -1135,7 +1402,7 @@ class Game {
   }
 
   explode(x, y, r, dmg, owner, color, knock) {
-    const list = this.queryRadius(x, y, r + 16, this.tmp2);
+    const list = this.queryRadius(x, y, r + C.BOSS.radius, this.tmp2);
     for (let k = 0; k < list.length; k++) {
       const e = list[k];
       if (e.dead) continue;
@@ -1148,9 +1415,9 @@ class Game {
     this.addFx('explosion', x, y, { radius: r, color, life: 0.3 });
   }
 
-  // ─── 경험치 / 레벨업 ────────────────────────────────────
-  dropGem(x, y, v) {
-    if (this.gems.length >= C.GEM_CAP) {
+  // ─── 경험치 ─────────────────────────────────────────────
+  dropGem(x, y, v, force = false) {
+    if (!force && this.gems.length >= C.GEM_CAP) {
       // 너무 많으면 기존 조각에 합쳐서 개수를 묶어둔다
       this.gems[(Math.random() * this.gems.length) | 0].v += v;
       return;
@@ -1158,8 +1425,17 @@ class Game {
     this.gems.push({ x, y, v, mag: null, spd: 0, dead: false });
   }
 
+  scatterGems(x, y, count, value) {
+    for (let i = 0; i < count; i++) {
+      const a = rand(0, TAU);
+      const r = rand(10, 40);
+      this.dropGem(x + Math.cos(a) * r, y + Math.sin(a) * r, value, true);
+    }
+  }
+
   updateGems(dt) {
-    const pr2 = C.PICKUP_RADIUS * C.PICKUP_RADIUS;
+    const pr = C.PICKUP_RADIUS * this.mods.pickup;
+    const pr2 = pr * pr;
     for (let i = 0; i < this.gems.length; i++) {
       const g = this.gems[i];
       if (g.mag && !g.mag.alive) g.mag = null;
@@ -1181,7 +1457,7 @@ class Game {
       const d = Math.hypot(dx, dy) || 1;
       g.spd = Math.min(g.spd + 900 * dt, 900);
       if (d < u.r + 6 || d < g.spd * dt) {
-        this.gainXp(g.v);
+        this.gainXp(g.v * this.mods.xp);
         g.dead = true;
         continue;
       }
@@ -1197,56 +1473,129 @@ class Game {
       this.xp -= this.xpNeed;
       this.level++;
       this.xpNeed = C.XP_CURVE.first + (this.level - 1) * C.XP_CURVE.step;
-      this.pendingLevels++;
+      this.queue.push({ kind: 'level', level: this.level });
     }
   }
 
-  makeOffer() {
-    if (this.units.length - 1 < C.MAX_COMPANIONS) {
-      const used = new Set(this.usedNames);
-      const cards = [];
-      for (let i = 0; i < 3; i++) {
-        const name = makeName(used);
-        used.add(name);
-        cards.push({ def: rollWeapon(), name });
+  // ─── 선택창 (레벨업 / 패시브 / 보스 보상) ─────────────────
+  upgradeCards(levels, cap, count) {
+    return shuffle(this.units.filter((u) => u.weapon.level < cap))
+      .slice(0, count)
+      .map((unit) => ({ type: 'upgrade', unit, levels, cap }));
+  }
+
+  healCard() {
+    return { type: 'heal' };
+  }
+
+  makeOffer(req) {
+    if (req.kind === 'level') {
+      const title = `Lv ${req.level} 달성`;
+      if (this.units.length - 1 < C.MAX_COMPANIONS) {
+        const used = new Set(this.usedNames);
+        const cards = [];
+        for (let i = 0; i < 3; i++) {
+          const name = makeName(used);
+          used.add(name);
+          cards.push({ type: 'recruit', def: rollWeapon(), name });
+        }
+        return { title: `${title} — 동료를 영입하라`, sub: `갱 ${this.units.length - 1} / ${C.MAX_COMPANIONS}`, cards };
       }
-      return { kind: 'recruit', cards };
+      const cards = this.upgradeCards(1, C.WEAPON_MAX_LEVEL, 3);
+      if (cards.length) return { title: `${title} — 갱이 꽉 찼다`, sub: '한 명의 무기를 +1레벨', cards };
+      return { title: `${title} — 전원 최대 강화`, sub: '갱 전원 회복', cards: [this.healCard()] };
     }
-    const candidates = shuffle(this.units.filter((u) => u.weapon.level < C.WEAPON_MAX_LEVEL));
-    if (candidates.length === 0) return { kind: 'heal', cards: [{}] };
-    return { kind: 'upgrade', cards: candidates.slice(0, 3).map((unit) => ({ unit })) };
+
+    if (req.kind === 'passive') {
+      const cards = shuffle(PASSIVES.filter((p) => (this.passives[p.id] || 0) < C.PASSIVE_MAX_LEVEL))
+        .slice(0, 3)
+        .map((p) => ({ type: 'passive', passive: p, level: (this.passives[p.id] || 0) + 1 }));
+      return {
+        title: `${req.from} 처치 — 패시브 강화`,
+        sub: '갱 전원에게 적용된다',
+        cards: cards.length ? cards : [this.healCard()],
+      };
+    }
+
+    // 보스 보상: 죽은 동료가 있고 자리가 있으면 [부활 + 대강화 2], 아니면 [대강화 3]
+    const free = C.MAX_COMPANIONS - (this.units.length - 1);
+    const cards = [];
+    if (this.dead.length && free > 0) cards.push({ type: 'revive', targets: this.dead.slice(0, free) });
+    cards.push(...this.upgradeCards(C.BOSS_UPGRADE_LEVELS, C.WEAPON_BOSS_MAX_LEVEL, 3 - cards.length));
+    return {
+      title: `${req.from} 처치 — 보스 보상`,
+      sub: '죽은 동료 부활 또는 무기 대강화',
+      cards: cards.length ? cards : [this.healCard()],
+    };
   }
 
-  openLevelUp() {
-    this.state = 'levelup';
-    const offer = this.makeOffer();
-    const reachedLevel = this.level - this.pendingLevels + 1;
-    this.ui.showLevelUp(offer, reachedLevel, this, (i) => this.applyChoice(offer, i));
+  openNext() {
+    this.state = 'choice';
+    const offer = this.makeOffer(this.queue.shift());
+    this.ui.showChoice(offer, this, (i) => this.applyChoice(offer.cards[i]));
   }
 
-  applyChoice(offer, i) {
-    const c = offer.cards[i];
-    if (offer.kind === 'recruit') {
-      const L = this.leader;
-      const ang = rand(0, TAU);
-      const u = this.createUnit(false, c.def, L.x + Math.cos(ang) * 50, L.y + Math.sin(ang) * 50, c.name);
-      const t = TIERS[c.def.tier];
-      this.notice(`${u.name} 합류 — ${c.def.name} [${t.label}]`, t.color);
-    } else if (offer.kind === 'upgrade') {
-      const w = c.unit.weapon;
-      setWeaponLevel(w, w.level + 1);
-      this.notice(`${c.unit.name}의 ${w.def.name} Lv${w.level}`, TIERS[w.def.tier].color);
-    } else {
-      for (const u of this.units) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.3);
-      this.notice('갱 전원 HP 30% 회복', '#7bd88f');
+  applyChoice(c) {
+    const L = this.leader;
+    switch (c.type) {
+      case 'recruit': {
+        const ang = rand(0, TAU);
+        const u = this.createUnit(false, c.def, L.x + Math.cos(ang) * 50, L.y + Math.sin(ang) * 50, c.name);
+        const t = TIERS[c.def.tier];
+        this.notice(`${u.name} 합류 — ${c.def.name} [${t.label}]`, t.color);
+        break;
+      }
+      case 'upgrade': {
+        const w = c.unit.weapon;
+        setWeaponLevel(w, w.level + c.levels, c.cap);
+        c.unit.joinFx = 0.6;
+        this.notice(`${c.unit.name}의 ${w.def.name} Lv${w.level}`, TIERS[w.def.tier].color);
+        break;
+      }
+      case 'passive':
+        this.passives[c.passive.id] = c.level;
+        this.applyMods();
+        this.notice(`${c.passive.name} Lv${c.level} — ${c.passive.desc}`, '#7bd88f');
+        break;
+      case 'revive':
+        for (const u of c.targets) {
+          const ang = rand(0, TAU);
+          u.alive = true;
+          u.hp = u.maxHp;
+          u.x = L.x + Math.cos(ang) * 50;
+          u.y = L.y + Math.sin(ang) * 50;
+          u.vx = u.vy = 0;
+          u.iframe = 1.5;
+          u.joinFx = 0.6;
+          this.units.push(u);
+          this.dead.splice(this.dead.indexOf(u), 1);
+        }
+        this.notice(`동료 ${c.targets.length}명 부활!`, '#7bd88f');
+        break;
+      default:
+        for (const u of this.units) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.3);
+        this.notice('갱 전원 HP 30% 회복', '#7bd88f');
     }
-    this.pendingLevels--;
-    if (this.pendingLevels > 0) {
-      this.openLevelUp();
+    if (this.queue.length) {
+      this.openNext();
     } else {
       this.state = 'playing';
       this.ui.hide();
     }
+  }
+
+  // 패시브 반영. 최대 HP가 늘면 늘어난 만큼 현재 HP도 채워준다.
+  applyMods() {
+    this.mods = computeMods(this.passives);
+    for (const u of [...this.units, ...this.dead]) {
+      const maxHp = Math.round(this.baseHp(u) * this.mods.hpMul);
+      if (u.alive) u.hp += maxHp - u.maxHp;
+      u.maxHp = maxHp;
+    }
+  }
+
+  passiveList() {
+    return PASSIVES.filter((p) => this.passives[p.id]).map((p) => ({ ...PASSIVE_BY_ID[p.id], level: this.passives[p.id] }));
   }
 
   finish(victory) {
@@ -1302,7 +1651,7 @@ return { Game };
 
 // ── src/render.js ──
 __mod["src/render.js"] = (() => {
-const { VIEW_W, VIEW_H, RUN_TIME, MAX_COMPANIONS } = __mod["src/config.js"];
+const { VIEW_W, VIEW_H, RUN_TIME, MAX_COMPANIONS, ENEMY_TYPES, NAMED, BOSS } = __mod["src/config.js"];
 const { TIERS } = __mod["src/data/weapons.js"];
 const { TAU, formatTime } = __mod["src/util.js"];
 const COL = {
@@ -1310,12 +1659,11 @@ const COL = {
   tileA: '#20232a',
   tileB: '#1d2026',
   debris: '#2b2f38',
-  enemy: '#5f8f3e',
-  enemyEdge: '#34521f',
   leader: '#ffd23f',
   edge: '#0b0c0f',
   gem: '#5ab4ff',
-  gemBig: '#7bd88f',
+  gemMid: '#7bd88f',
+  gemBig: '#ff6b6b',
   xp: '#4aa3ff',
   hp: '#e5484d',
 };
@@ -1344,7 +1692,9 @@ function render(ctx, game, scale) {
   if (game.state !== 'title') {
     drawZones(ctx, game);
     drawGems(ctx, game, view);
+    drawTelegraphs(ctx, game);
     drawEnemies(ctx, game, view);
+    drawElites(ctx, game);
     drawUnits(ctx, game);
     drawProjectiles(ctx, game, view);
     drawLobs(ctx, game);
@@ -1402,12 +1752,16 @@ function drawZones(ctx, game) {
 }
 
 function drawGems(ctx, game, v) {
-  for (const big of [false, true]) {
-    ctx.fillStyle = big ? COL.gemBig : COL.gem;
+  const tiers = [
+    [COL.gem, 4, (g) => g.v < 5],
+    [COL.gemMid, 5, (g) => g.v >= 5 && g.v < 20],
+    [COL.gemBig, 7, (g) => g.v >= 20],
+  ];
+  for (const [color, s, match] of tiers) {
+    ctx.fillStyle = color;
     ctx.beginPath();
     for (const g of game.gems) {
-      if (g.v >= 10 !== big || !inView(v, g.x, g.y)) continue;
-      const s = big ? 6 : 4;
+      if (!match(g) || !inView(v, g.x, g.y)) continue;
       ctx.moveTo(g.x, g.y - s - 1);
       ctx.lineTo(g.x + s, g.y);
       ctx.lineTo(g.x, g.y + s + 1);
@@ -1418,20 +1772,85 @@ function drawGems(ctx, game, v) {
   }
 }
 
+// 돌진 예고: 돌진할 경로를 붉게 깜빡이며 보여준다
+function drawTelegraphs(ctx, game) {
+  for (const e of game.enemies) {
+    if (e.mode !== 'windup') continue;
+    const c = e.charge;
+    const len = c.dashSpeed * c.dashTime;
+    const k = 1 - e.modeT / c.windup;
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.rotate(Math.atan2(e.dirY, e.dirX));
+    ctx.globalAlpha = 0.18 + 0.2 * k;
+    ctx.fillStyle = '#ff3030';
+    ctx.fillRect(0, -e.r, len, e.r * 2);
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(0, -e.r, len * k, e.r * 2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawEnemies(ctx, game, v) {
-  // 같은 색끼리 한 번에 채워서 draw call을 줄인다
+  // 같은 종류끼리 한 번에 채워서 draw call을 줄인다
   ctx.lineWidth = 2;
-  for (const flashing of [false, true]) {
-    ctx.fillStyle = flashing ? '#ffffff' : COL.enemy;
-    ctx.strokeStyle = COL.enemyEdge;
-    ctx.beginPath();
-    for (const e of game.enemies) {
-      if (e.flash > 0 !== flashing || !inView(v, e.x, e.y)) continue;
-      ctx.moveTo(e.x + e.r, e.y);
-      ctx.arc(e.x, e.y, e.r, 0, TAU);
+  for (const [type, T] of Object.entries(ENEMY_TYPES)) {
+    for (const flashing of [false, true]) {
+      ctx.fillStyle = flashing ? '#ffffff' : T.color;
+      ctx.strokeStyle = T.edge;
+      ctx.beginPath();
+      for (const e of game.enemies) {
+        if (e.type !== type || e.flash > 0 !== flashing || !inView(v, e.x, e.y)) continue;
+        ctx.moveTo(e.x + e.r, e.y);
+        ctx.arc(e.x, e.y, e.r, 0, TAU);
+      }
+      ctx.fill();
+      ctx.stroke();
     }
+  }
+}
+
+// 네임드 / 보스: 개별로 크게 그린다
+function drawElites(ctx, game) {
+  for (const e of game.enemies) {
+    if (e.kind === 'normal') continue;
+    const S = e.kind === 'boss' ? BOSS : NAMED;
+    const shake = e.mode === 'windup' ? (Math.random() - 0.5) * 4 : 0;
+    const x = e.x + shake;
+    const y = e.y;
+    ctx.fillStyle = e.flash > 0 ? '#ffffff' : S.color;
+    ctx.strokeStyle = S.edge;
+    ctx.lineWidth = e.kind === 'boss' ? 5 : 3;
+    ctx.beginPath();
+    ctx.arc(x, y, e.r, 0, TAU);
     ctx.fill();
     ctx.stroke();
+
+    // 눈: 타겟 방향을 본다
+    const t = e.target;
+    const ang = t ? Math.atan2(t.y - e.y, t.x - e.x) : 0;
+    const ex = Math.cos(ang) * e.r * 0.35;
+    const ey = Math.sin(ang) * e.r * 0.35;
+    const px = -Math.sin(ang) * e.r * 0.3;
+    const py = Math.cos(ang) * e.r * 0.3;
+    ctx.fillStyle = e.mode === 'windup' ? '#ff3030' : '#ffe066';
+    ctx.beginPath();
+    ctx.arc(x + ex + px, y + ey + py, e.r * 0.13, 0, TAU);
+    ctx.arc(x + ex - px, y + ey - py, e.r * 0.13, 0, TAU);
+    ctx.fill();
+
+    if (e.kind === 'named') {
+      const w = 56;
+      const by = y - e.r - 10;
+      ctx.fillStyle = '#000a';
+      ctx.fillRect(x - w / 2 - 1, by - 1, w + 2, 6);
+      ctx.fillStyle = '#ff9f1c';
+      ctx.fillRect(x - w / 2, by, (w * Math.max(0, e.hp)) / e.maxHp, 4);
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      label(ctx, e.name, x, by - 11, '#ffb4a8', 'center');
+    }
   }
 }
 
@@ -1703,6 +2122,16 @@ function drawHud(ctx, game) {
 
   label(ctx, `처치 ${game.kills}`, VIEW_W - 16, 32, '#fff', 'right');
 
+  // 패시브
+  const ps = game.passiveList();
+  if (ps.length) {
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    label(ctx, ps.map((p) => `${p.name} ${p.level}`).join(' · '), 16, 84, '#7bd88f');
+  }
+
+  game.bosses.forEach((b, i) => drawBossBar(ctx, b, 64 + i * 30));
+  if (game.bossWarn) drawBossWarn(ctx, game);
+
   // 알림
   ctx.font = 'bold 16px system-ui, sans-serif';
   for (let i = 0; i < game.notices.length; i++) {
@@ -1715,6 +2144,27 @@ function drawHud(ctx, game) {
   if (game.debug.on) drawDebug(ctx, game);
 }
 
+function drawBossBar(ctx, b, y) {
+  const w = 560;
+  const x = (VIEW_W - w) / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(x - 3, y - 3, w + 6, 24);
+  ctx.fillStyle = '#5a0f18';
+  ctx.fillRect(x, y, w, 18);
+  ctx.fillStyle = '#e5484d';
+  ctx.fillRect(x, y, (w * Math.max(0, b.hp)) / b.maxHp, 18);
+  ctx.font = 'bold 14px system-ui, sans-serif';
+  label(ctx, `${b.name}  ${Math.ceil(Math.max(0, b.hp)).toLocaleString()} / ${Math.ceil(b.maxHp).toLocaleString()}`, VIEW_W / 2, y + 9, '#fff', 'center');
+}
+
+function drawBossWarn(ctx, game) {
+  const blink = Math.floor(game.time * 4) % 2 === 0;
+  ctx.fillStyle = 'rgba(120,0,0,0.35)';
+  ctx.fillRect(0, 150, VIEW_W, 70);
+  ctx.font = 'bold 34px system-ui, sans-serif';
+  label(ctx, `WARNING — ${game.bossWarn.name} 접근 중`, VIEW_W / 2, 185, blink ? '#ff6b6b' : '#ffd23f', 'center');
+}
+
 function drawDebug(ctx, game) {
   const lines = [
     `FPS ${game.fps.toFixed(0)}`,
@@ -1722,9 +2172,10 @@ function drawDebug(ctx, game) {
     `장판 ${game.zones.length}  연출 ${game.fx.length}  숫자 ${game.texts.length}`,
     `무적 ${game.debug.invincible ? 'ON' : 'OFF'}`,
     '[I] 무적  [L] 레벨업  [T] +30초',
+    '[N] 네임드 소환  [B] 보스 소환',
   ];
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(10, VIEW_H - 20 - lines.length * 18, 330, lines.length * 18 + 10);
+  ctx.fillRect(10, VIEW_H - 20 - lines.length * 18, 360, lines.length * 18 + 10);
   ctx.font = '13px ui-monospace, monospace';
   lines.forEach((t, i) => label(ctx, t, 18, VIEW_H - 6 - (lines.length - i) * 18 + 9, '#9fe870'));
 }
@@ -1780,12 +2231,14 @@ return { Input };
 
 // ── src/ui.js ──
 __mod["src/ui.js"] = (() => {
-// DOM 오버레이: 타이틀 / 레벨업 선택 / 일시정지 / 결과 화면
+// DOM 오버레이: 타이틀 / 선택창(레벨업·패시브·보스 보상) / 일시정지 / 결과 화면
 const { TIERS, nominalDps, LEVEL_BONUS_TEXT } = __mod["src/data/weapons.js"];
 const { computeStats } = __mod["src/weapons.js"];
-const { MAX_COMPANIONS, WEAPON_MAX_LEVEL } = __mod["src/config.js"];
+const { WEAPON_MAX_LEVEL, WEAPON_BOSS_MAX_LEVEL, PASSIVE_MAX_LEVEL } = __mod["src/config.js"];
 const { formatTime } = __mod["src/util.js"];
 const PICK_LOCK_MS = 250; // 창이 뜨자마자 실수로 고르는 것 방지
+const GREEN = '#7bd88f';
+const RED = '#ff6b6b';
 
 class UI {
   constructor(root) {
@@ -1819,6 +2272,9 @@ class UI {
           <li><b>1 · 2 · 3 / 클릭</b> 선택지 고르기</li>
           <li><b>ESC</b> 일시정지 · <b>F1</b> 또는 <b>\`</b> 디버그</li>
         </ul>
+        <ul class="help small">
+          <li>레벨업 → <b>동료 영입</b> · 네임드 처치 → <b>패시브 강화</b> · 보스 처치 → <b>부활 / 무기 대강화</b></li>
+        </ul>
         <p class="odds">무기 등급 확률
           <span style="color:${t.normal.color}">노멀 70%</span> ·
           <span style="color:${t.rare.color}">레어 20%</span> ·
@@ -1832,18 +2288,12 @@ class UI {
     this.root.querySelector('[data-act=start]').onclick = onStart;
   }
 
-  showLevelUp(offer, level, game, onPick) {
-    const heads = {
-      recruit: ['동료를 영입하라', `갱 ${game.units.length - 1} / ${MAX_COMPANIONS}`],
-      upgrade: ['갱이 꽉 찼다 — 무기 강화', '한 명의 무기를 +1레벨'],
-      heal: ['전원 최대 강화 완료', '갱 전원 회복'],
-    };
-    const [title, sub] = heads[offer.kind];
-    const cards = offer.cards.map((c, i) => this.cardHtml(offer.kind, c, i)).join('');
+  showChoice(offer, game, onPick) {
+    const cards = offer.cards.map((c, i) => this.cardHtml(c, i)).join('');
     this.show(
       `<div class="panel wide">
-        <h2>Lv ${level} 달성 — ${title}</h2>
-        <p class="sub">${sub}</p>
+        <h2>${offer.title}</h2>
+        <p class="sub">${offer.sub}</p>
         <div class="cards">${cards}</div>
       </div>`,
       (e) => {
@@ -1863,40 +2313,55 @@ class UI {
     });
   }
 
-  cardHtml(kind, c, i) {
-    if (kind === 'recruit') {
-      const t = TIERS[c.def.tier];
-      return `<button class="card" style="--tc:${t.color}" data-i="${i}">
-        <span class="c-key">${i + 1}</span>
-        <span class="c-tier">${t.label}</span>
-        <span class="c-weapon">${c.def.name}</span>
-        <span class="c-name">${c.name}</span>
-        <span class="c-desc">${c.def.desc}</span>
-        <span class="c-dps">DPS ${Math.round(nominalDps(c.def.type, c.def.stats))}</span>
-      </button>`;
-    }
-    if (kind === 'upgrade') {
-      const w = c.unit.weapon;
-      const t = TIERS[w.def.tier];
-      const next = w.level + 1;
-      const before = nominalDps(w.def.type, w.stats);
-      const after = nominalDps(w.def.type, computeStats(w.def, next));
-      const extra = next === 3 || next === 5 ? `<br>+ ${LEVEL_BONUS_TEXT[w.def.type]}` : '';
-      return `<button class="card" style="--tc:${t.color}" data-i="${i}">
-        <span class="c-key">${i + 1}</span>
-        <span class="c-tier">${t.label} · Lv ${w.level} → ${next}</span>
-        <span class="c-weapon">${w.def.name}</span>
-        <span class="c-name">${c.unit.name}</span>
-        <span class="c-desc">피해 +25%${extra}</span>
-        <span class="c-dps">DPS ${Math.round(before)} → ${Math.round(after)}</span>
-      </button>`;
-    }
-    return `<button class="card" style="--tc:#7bd88f" data-i="${i}">
-      <span class="c-key">1</span>
-      <span class="c-tier">회복</span>
-      <span class="c-weapon">응급처치</span>
-      <span class="c-desc">갱 전원 HP 30% 회복</span>
+  card(i, color, { tier, head, name, desc, foot }) {
+    return `<button class="card" style="--tc:${color}" data-i="${i}">
+      <span class="c-key">${i + 1}</span>
+      <span class="c-tier">${tier}</span>
+      <span class="c-weapon">${head}</span>
+      ${name ? `<span class="c-name">${name}</span>` : ''}
+      <span class="c-desc">${desc}</span>
+      ${foot ? `<span class="c-dps">${foot}</span>` : ''}
     </button>`;
+  }
+
+  cardHtml(c, i) {
+    switch (c.type) {
+      case 'recruit': {
+        const t = TIERS[c.def.tier];
+        return this.card(i, t.color, {
+          tier: t.label, head: c.def.name, name: c.name, desc: c.def.desc,
+          foot: `DPS ${Math.round(nominalDps(c.def.type, c.def.stats))}`,
+        });
+      }
+      case 'upgrade': {
+        const w = c.unit.weapon;
+        const t = TIERS[w.def.tier];
+        const next = Math.min(w.level + c.levels, c.cap);
+        const bonuses = [3, 5, 7].filter((lv) => lv > w.level && lv <= next);
+        const extra = bonuses.length ? `<br>+ ${LEVEL_BONUS_TEXT[w.def.type]}${bonuses.length > 1 ? ` ×${bonuses.length}` : ''}` : '';
+        const big = c.levels > 1 ? '대강화 · ' : '';
+        return this.card(i, t.color, {
+          tier: `${big}${t.label} · Lv ${w.level} → ${next}`,
+          head: w.def.name, name: c.unit.name,
+          desc: `피해 +${25 * (next - w.level)}%${extra}`,
+          foot: `DPS ${Math.round(nominalDps(w.def.type, w.stats))} → ${Math.round(nominalDps(w.def.type, computeStats(w.def, next)))}`,
+        });
+      }
+      case 'passive':
+        return this.card(i, GREEN, {
+          tier: c.level === 1 ? '새 패시브' : `Lv ${c.level - 1} → ${c.level}`,
+          head: c.passive.name, desc: c.passive.desc,
+          foot: c.level === PASSIVE_MAX_LEVEL ? 'MAX' : '',
+        });
+      case 'revive':
+        return this.card(i, RED, {
+          tier: '부활', head: `동료 ${c.targets.length}명 부활`,
+          desc: c.targets.map((u) => `${u.name} <small>(${u.weapon.def.name})</small>`).join('<br>'),
+          foot: '풀 HP로 복귀',
+        });
+      default:
+        return this.card(i, GREEN, { tier: '회복', head: '응급처치', desc: '갱 전원 HP 30% 회복' });
+    }
   }
 
   rosterRows(units, showDamage) {
@@ -1907,12 +2372,19 @@ class UI {
         const hp = u.alive ? `${Math.ceil(u.hp)} / ${u.maxHp}` : '<span class="dead">사망</span>';
         const dmg = showDamage ? `<td class="num">${Math.round(u.dmgDealt).toLocaleString()}</td>` : '';
         const rank = showDamage ? `<td class="num">${i + 1}</td>` : '';
+        const max = w.level >= WEAPON_BOSS_MAX_LEVEL ? ' (MAX)' : w.level > WEAPON_MAX_LEVEL ? ' ★' : '';
         return `<tr>${rank}<td>${u.name}</td>
           <td style="color:${t.color}">${w.def.name} <small>${t.label}</small></td>
-          <td class="num">Lv ${w.level}${w.level >= WEAPON_MAX_LEVEL ? ' (MAX)' : ''}</td>
+          <td class="num">Lv ${w.level}${max}</td>
           <td class="num">${hp}</td>${dmg}</tr>`;
       })
       .join('');
+  }
+
+  passiveLine(game) {
+    const list = game.passiveList();
+    if (!list.length) return '<p class="sub">패시브 없음 — 네임드를 잡아서 얻는다</p>';
+    return `<p class="passives">${list.map((p) => `<span>${p.name} Lv${p.level}</span>`).join('')}</p>`;
   }
 
   showPause(game, onResume) {
@@ -1920,6 +2392,7 @@ class UI {
       `<div class="panel wide">
         <h2>일시정지</h2>
         <p class="sub">${formatTime(game.time)} 경과 · Lv ${game.level} · 처치 ${game.kills}</p>
+        ${this.passiveLine(game)}
         <table class="roster">
           <tr><th>이름</th><th>무기</th><th>레벨</th><th>HP</th></tr>
           ${this.rosterRows([...game.units, ...game.dead], false)}
@@ -1936,9 +2409,11 @@ class UI {
     this.show(
       `<div class="panel wide">
         <h1 class="${victory ? 'win' : 'lose'}">${victory ? '생존 성공!' : '두목 사망'}</h1>
-        <p class="sub">생존 ${formatTime(game.time)} · Lv ${game.level} · 처치 ${game.kills} ·
+        <p class="sub">생존 ${formatTime(game.time)} · Lv ${game.level} ·
+          처치 ${game.kills} (네임드 ${game.namedKills} · 보스 ${game.bossKills}) ·
           동료 ${game.units.length - 1}명 생존 / ${game.dead.length}명 사망</p>
         <p class="mvp">MVP — <b>${mvp.name}</b> (${mvp.weapon.def.name})</p>
+        ${this.passiveLine(game)}
         <table class="roster">
           <tr><th>#</th><th>이름</th><th>무기</th><th>레벨</th><th>HP</th><th>누적 피해</th></tr>
           ${this.rosterRows(ranked, true)}

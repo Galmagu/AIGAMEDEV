@@ -1,10 +1,10 @@
 // 무기 런타임: 레벨 반영 스탯 계산 + 쿨다운 관리 + 유형별 발동 처리
-import { WEAPON_MAX_LEVEL, WEAPON_DMG_PER_LEVEL } from './config.js';
+import { WEAPON_DMG_PER_LEVEL } from './config.js';
 import { DEG, rand, angleDiff, segDist2 } from './util.js';
 
 export function computeStats(def, level) {
   const s = { ...def.stats };
-  const bonus = (level >= 3 ? 1 : 0) + (level >= 5 ? 1 : 0);
+  const bonus = (level >= 3 ? 1 : 0) + (level >= 5 ? 1 : 0) + (level >= 7 ? 1 : 0);
   s.dmg *= 1 + WEAPON_DMG_PER_LEVEL * (level - 1);
   switch (def.type) {
     case 'projectile':
@@ -41,8 +41,8 @@ export function createWeapon(def) {
   };
 }
 
-export function setWeaponLevel(w, level) {
-  w.level = Math.min(level, WEAPON_MAX_LEVEL);
+export function setWeaponLevel(w, level, cap) {
+  w.level = Math.min(level, cap);
   w.stats = computeStats(w.def, w.level);
 }
 
@@ -70,7 +70,7 @@ export function updateWeapon(game, u, dt) {
     return;
   }
   fire(game, u, w, target);
-  w.cd += s.cd;
+  w.cd += s.cd * game.mods.cd;
   if (s.burst > 1) {
     w.burstLeft = s.burst - 1;
     w.burstTimer = s.burstInterval;

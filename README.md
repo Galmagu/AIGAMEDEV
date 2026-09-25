@@ -32,7 +32,7 @@ node tools/build.mjs          # → dist/gang-survivor.html 갱신
 | ESC / P | 일시정지 |
 | F1 / \` | 디버그 패널 |
 
-디버그 패널이 켜져 있을 때: `I` 무적, `L` 즉시 레벨업, `T` 30초 건너뛰기.
+디버그 패널이 켜져 있을 때: `I` 무적, `L` 즉시 레벨업, `T` 30초 건너뛰기, `N` 네임드 소환, `B` 보스 소환.
 콘솔에서 `__game`으로 게임 상태에 바로 접근할 수 있다.
 
 ## 구조
@@ -50,6 +50,7 @@ src/
   spatial.js        공간 해시 (충돌/최근접 탐색)
   util.js
   data/weapons.js   무기 15종 정의, 티어 확률
+  data/passives.js  패시브 8종
   data/names.js     동료 별명 생성
 tools/build.mjs     src/를 단일 HTML로 묶는 빌드 스크립트 (의존성 없음)
 dist/               빌드 결과 (더블클릭 실행용)

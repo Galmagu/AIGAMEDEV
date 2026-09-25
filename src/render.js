@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, RUN_TIME, MAX_COMPANIONS } from './config.js';
+import { VIEW_W, VIEW_H, RUN_TIME, MAX_COMPANIONS, ENEMY_TYPES, NAMED, BOSS } from './config.js';
 import { TIERS } from './data/weapons.js';
 import { TAU, formatTime } from './util.js';
 
@@ -7,12 +7,11 @@ const COL = {
   tileA: '#20232a',
   tileB: '#1d2026',
   debris: '#2b2f38',
-  enemy: '#5f8f3e',
-  enemyEdge: '#34521f',
   leader: '#ffd23f',
   edge: '#0b0c0f',
   gem: '#5ab4ff',
-  gemBig: '#7bd88f',
+  gemMid: '#7bd88f',
+  gemBig: '#ff6b6b',
   xp: '#4aa3ff',
   hp: '#e5484d',
 };
@@ -41,7 +40,9 @@ export function render(ctx, game, scale) {
   if (game.state !== 'title') {
     drawZones(ctx, game);
     drawGems(ctx, game, view);
+    drawTelegraphs(ctx, game);
     drawEnemies(ctx, game, view);
+    drawElites(ctx, game);
     drawUnits(ctx, game);
     drawProjectiles(ctx, game, view);
     drawLobs(ctx, game);
@@ -99,12 +100,16 @@ function drawZones(ctx, game) {
 }
 
 function drawGems(ctx, game, v) {
-  for (const big of [false, true]) {
-    ctx.fillStyle = big ? COL.gemBig : COL.gem;
+  const tiers = [
+    [COL.gem, 4, (g) => g.v < 5],
+    [COL.gemMid, 5, (g) => g.v >= 5 && g.v < 20],
+    [COL.gemBig, 7, (g) => g.v >= 20],
+  ];
+  for (const [color, s, match] of tiers) {
+    ctx.fillStyle = color;
     ctx.beginPath();
     for (const g of game.gems) {
-      if (g.v >= 10 !== big || !inView(v, g.x, g.y)) continue;
-      const s = big ? 6 : 4;
+      if (!match(g) || !inView(v, g.x, g.y)) continue;
       ctx.moveTo(g.x, g.y - s - 1);
       ctx.lineTo(g.x + s, g.y);
       ctx.lineTo(g.x, g.y + s + 1);
@@ -115,20 +120,85 @@ function drawGems(ctx, game, v) {
   }
 }
 
+// 돌진 예고: 돌진할 경로를 붉게 깜빡이며 보여준다
+function drawTelegraphs(ctx, game) {
+  for (const e of game.enemies) {
+    if (e.mode !== 'windup') continue;
+    const c = e.charge;
+    const len = c.dashSpeed * c.dashTime;
+    const k = 1 - e.modeT / c.windup;
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.rotate(Math.atan2(e.dirY, e.dirX));
+    ctx.globalAlpha = 0.18 + 0.2 * k;
+    ctx.fillStyle = '#ff3030';
+    ctx.fillRect(0, -e.r, len, e.r * 2);
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(0, -e.r, len * k, e.r * 2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawEnemies(ctx, game, v) {
-  // 같은 색끼리 한 번에 채워서 draw call을 줄인다
+  // 같은 종류끼리 한 번에 채워서 draw call을 줄인다
   ctx.lineWidth = 2;
-  for (const flashing of [false, true]) {
-    ctx.fillStyle = flashing ? '#ffffff' : COL.enemy;
-    ctx.strokeStyle = COL.enemyEdge;
-    ctx.beginPath();
-    for (const e of game.enemies) {
-      if (e.flash > 0 !== flashing || !inView(v, e.x, e.y)) continue;
-      ctx.moveTo(e.x + e.r, e.y);
-      ctx.arc(e.x, e.y, e.r, 0, TAU);
+  for (const [type, T] of Object.entries(ENEMY_TYPES)) {
+    for (const flashing of [false, true]) {
+      ctx.fillStyle = flashing ? '#ffffff' : T.color;
+      ctx.strokeStyle = T.edge;
+      ctx.beginPath();
+      for (const e of game.enemies) {
+        if (e.type !== type || e.flash > 0 !== flashing || !inView(v, e.x, e.y)) continue;
+        ctx.moveTo(e.x + e.r, e.y);
+        ctx.arc(e.x, e.y, e.r, 0, TAU);
+      }
+      ctx.fill();
+      ctx.stroke();
     }
+  }
+}
+
+// 네임드 / 보스: 개별로 크게 그린다
+function drawElites(ctx, game) {
+  for (const e of game.enemies) {
+    if (e.kind === 'normal') continue;
+    const S = e.kind === 'boss' ? BOSS : NAMED;
+    const shake = e.mode === 'windup' ? (Math.random() - 0.5) * 4 : 0;
+    const x = e.x + shake;
+    const y = e.y;
+    ctx.fillStyle = e.flash > 0 ? '#ffffff' : S.color;
+    ctx.strokeStyle = S.edge;
+    ctx.lineWidth = e.kind === 'boss' ? 5 : 3;
+    ctx.beginPath();
+    ctx.arc(x, y, e.r, 0, TAU);
     ctx.fill();
     ctx.stroke();
+
+    // 눈: 타겟 방향을 본다
+    const t = e.target;
+    const ang = t ? Math.atan2(t.y - e.y, t.x - e.x) : 0;
+    const ex = Math.cos(ang) * e.r * 0.35;
+    const ey = Math.sin(ang) * e.r * 0.35;
+    const px = -Math.sin(ang) * e.r * 0.3;
+    const py = Math.cos(ang) * e.r * 0.3;
+    ctx.fillStyle = e.mode === 'windup' ? '#ff3030' : '#ffe066';
+    ctx.beginPath();
+    ctx.arc(x + ex + px, y + ey + py, e.r * 0.13, 0, TAU);
+    ctx.arc(x + ex - px, y + ey - py, e.r * 0.13, 0, TAU);
+    ctx.fill();
+
+    if (e.kind === 'named') {
+      const w = 56;
+      const by = y - e.r - 10;
+      ctx.fillStyle = '#000a';
+      ctx.fillRect(x - w / 2 - 1, by - 1, w + 2, 6);
+      ctx.fillStyle = '#ff9f1c';
+      ctx.fillRect(x - w / 2, by, (w * Math.max(0, e.hp)) / e.maxHp, 4);
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      label(ctx, e.name, x, by - 11, '#ffb4a8', 'center');
+    }
   }
 }
 
@@ -400,6 +470,16 @@ function drawHud(ctx, game) {
 
   label(ctx, `처치 ${game.kills}`, VIEW_W - 16, 32, '#fff', 'right');
 
+  // 패시브
+  const ps = game.passiveList();
+  if (ps.length) {
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    label(ctx, ps.map((p) => `${p.name} ${p.level}`).join(' · '), 16, 84, '#7bd88f');
+  }
+
+  game.bosses.forEach((b, i) => drawBossBar(ctx, b, 64 + i * 30));
+  if (game.bossWarn) drawBossWarn(ctx, game);
+
   // 알림
   ctx.font = 'bold 16px system-ui, sans-serif';
   for (let i = 0; i < game.notices.length; i++) {
@@ -412,6 +492,27 @@ function drawHud(ctx, game) {
   if (game.debug.on) drawDebug(ctx, game);
 }
 
+function drawBossBar(ctx, b, y) {
+  const w = 560;
+  const x = (VIEW_W - w) / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(x - 3, y - 3, w + 6, 24);
+  ctx.fillStyle = '#5a0f18';
+  ctx.fillRect(x, y, w, 18);
+  ctx.fillStyle = '#e5484d';
+  ctx.fillRect(x, y, (w * Math.max(0, b.hp)) / b.maxHp, 18);
+  ctx.font = 'bold 14px system-ui, sans-serif';
+  label(ctx, `${b.name}  ${Math.ceil(Math.max(0, b.hp)).toLocaleString()} / ${Math.ceil(b.maxHp).toLocaleString()}`, VIEW_W / 2, y + 9, '#fff', 'center');
+}
+
+function drawBossWarn(ctx, game) {
+  const blink = Math.floor(game.time * 4) % 2 === 0;
+  ctx.fillStyle = 'rgba(120,0,0,0.35)';
+  ctx.fillRect(0, 150, VIEW_W, 70);
+  ctx.font = 'bold 34px system-ui, sans-serif';
+  label(ctx, `WARNING — ${game.bossWarn.name} 접근 중`, VIEW_W / 2, 185, blink ? '#ff6b6b' : '#ffd23f', 'center');
+}
+
 function drawDebug(ctx, game) {
   const lines = [
     `FPS ${game.fps.toFixed(0)}`,
@@ -419,9 +520,10 @@ function drawDebug(ctx, game) {
     `장판 ${game.zones.length}  연출 ${game.fx.length}  숫자 ${game.texts.length}`,
     `무적 ${game.debug.invincible ? 'ON' : 'OFF'}`,
     '[I] 무적  [L] 레벨업  [T] +30초',
+    '[N] 네임드 소환  [B] 보스 소환',
   ];
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(10, VIEW_H - 20 - lines.length * 18, 330, lines.length * 18 + 10);
+  ctx.fillRect(10, VIEW_H - 20 - lines.length * 18, 360, lines.length * 18 + 10);
   ctx.font = '13px ui-monospace, monospace';
   lines.forEach((t, i) => label(ctx, t, 18, VIEW_H - 6 - (lines.length - i) * 18 + 9, '#9fe870'));
 }
