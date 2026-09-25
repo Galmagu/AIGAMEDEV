@@ -1,0 +1,2013 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>갱 서바이버</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #0e0f12; color: #eee;
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  /* 16:9 무대를 화면에 꽉 맞춘다. 오버레이 글자 크기는 무대 기준(cqw)으로 */
+  #stage {
+    position: absolute; inset: 0; margin: auto;
+    width: min(100vw, calc(100vh * 16 / 9));
+    height: min(100vh, calc(100vw * 9 / 16));
+    container-type: size;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  #overlay {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(8, 9, 12, 0.72);
+    font-size: 1.25cqw;
+  }
+  #overlay.show { display: flex; }
+
+  .panel { text-align: center; max-width: 60cqw; }
+  .panel.wide { max-width: 90cqw; }
+  h1 { font-size: 4.2cqw; margin: 0 0 0.6cqw; color: #ffd23f; letter-spacing: 0.1cqw; }
+  h1.win { color: #7bd88f; }
+  h1.lose { color: #ff6b6b; }
+  h2 { font-size: 2.4cqw; margin: 0 0 0.4cqw; color: #ffd23f; }
+  .sub { color: #aab; margin: 0 0 1.6cqw; }
+  .help { list-style: none; padding: 0; margin: 0 0 1.4cqw; line-height: 1.9; }
+  .help b { color: #ffd23f; }
+  .odds { margin: 0 0 2cqw; color: #aab; }
+  .mvp { margin: 0 0 1cqw; }
+  .mvp b { color: #ffd23f; }
+
+  .btn {
+    font: inherit; font-weight: 700; font-size: 1.4cqw;
+    padding: 0.8cqw 2.4cqw; margin-top: 1.4cqw;
+    border: 0.15cqw solid #ffd23f; border-radius: 0.6cqw;
+    background: #2a2410; color: #ffd23f; cursor: pointer;
+  }
+  .btn:hover { background: #3a3214; }
+
+  .cards { display: flex; gap: 1.8cqw; justify-content: center; }
+  .card {
+    position: relative; width: 20cqw; min-height: 22cqw;
+    display: flex; flex-direction: column; align-items: center; gap: 0.7cqw;
+    padding: 2cqw 1.4cqw 1.6cqw;
+    font: inherit; color: #eee; text-align: center;
+    background: #1c1f26; border: 0.25cqw solid var(--tc); border-radius: 1cqw;
+    box-shadow: 0 0 1.6cqw color-mix(in srgb, var(--tc) 35%, transparent);
+    cursor: pointer; transition: transform 0.08s;
+  }
+  .card:hover { transform: translateY(-0.5cqw); }
+  .c-key {
+    position: absolute; top: 0.6cqw; left: 0.8cqw;
+    font-weight: 700; color: #778;
+  }
+  .c-tier { font-weight: 700; color: var(--tc); letter-spacing: 0.1cqw; }
+  .c-weapon { font-size: 2.2cqw; font-weight: 800; }
+  .c-name { color: #ffd23f; }
+  .c-desc { color: #aab; flex: 1; line-height: 1.5; }
+  .c-dps { font-weight: 700; color: var(--tc); }
+
+  .roster { margin: 0 auto; border-collapse: collapse; font-size: 1.1cqw; }
+  .roster th { color: #889; font-weight: 600; padding: 0.3cqw 1cqw; border-bottom: 1px solid #333; }
+  .roster td { padding: 0.25cqw 1cqw; text-align: left; }
+  .roster td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .roster small { color: #778; }
+  .dead { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="overlay"></div>
+  </div>
+  <script>
+(() => {
+'use strict';
+const __mod = {};
+// ── src/config.js ──
+__mod["src/config.js"] = (() => {
+// 게임 전역 상수. 밸런싱은 대부분 여기와 data/weapons.js에서 한다.
+
+const VIEW_W = 1280;
+const VIEW_H = 720;
+const STEP = 1 / 60; // 고정 타임스텝
+
+const RUN_TIME = 480; // 8분 생존
+
+const MAX_COMPANIONS = 10;
+
+const LEADER = { hp: 100, speed: 150, radius: 13 };
+const COMPANION = { hp: 60, radius: 10 };
+
+// 동료 군집 이동
+const GANG = {
+  minDist: 40, // 이 거리 안쪽에선 주인공 쪽으로 안 끌려감
+  maxDist: 120, // 이 거리부터 최대 속도로 따라옴
+  speedMul: 1.2, // 동료 최대 속도 = 주인공 속도 × 1.2
+  separation: 28, // 동료끼리 이 거리 안쪽이면 밀어냄
+  accel: 6, // 속도 보간 계수 (낮을수록 굼뜨게 따라옴)
+  teleportDist: 700, // 이보다 멀어지면 주인공 옆으로 순간이동 (끼임 방지)
+};
+
+const HIT_IFRAME = 0.5;
+const PICKUP_RADIUS = 60;
+const GEM_CAP = 500;
+
+// 레벨 L → L+1 필요 경험치 = first + (L - 1) × step
+const XP_CURVE = { first: 5, step: 8 };
+
+const ENEMY_CAP = 300;
+const WALKER = { hp: 10, speed: 60, damage: 5, radius: 11, xp: 1 };
+const ENEMY_HP_GROWTH_PER_MIN = 0.12;
+
+const SPAWN = {
+  baseRate: 1.2, // 초당 스폰 수 (0분)
+  ratePerMin: 1.6, // 분당 증가량
+  baseMinAlive: 15, // 필드 최소 유지 수 (0분)
+  minAlivePerMin: 25,
+  ringMargin: 60, // 화면 대각선 밖 여유 거리
+  relocateDist: 1150, // 이보다 멀어진 적은 반대편으로 재배치
+};
+
+// 티어 먼저 추첨 → 티어 안에서 균등 랜덤
+const TIER_WEIGHTS = [
+  ['normal', 70],
+  ['rare', 20],
+  ['legendary', 10],
+];
+
+const WEAPON_MAX_LEVEL = 5;
+const WEAPON_DMG_PER_LEVEL = 0.25;
+
+const GRID_CELL = 64;
+const MAX_DAMAGE_TEXTS = 120;
+
+return { VIEW_W, VIEW_H, STEP, RUN_TIME, MAX_COMPANIONS, LEADER, COMPANION, GANG, HIT_IFRAME, PICKUP_RADIUS, GEM_CAP, XP_CURVE, ENEMY_CAP, WALKER, ENEMY_HP_GROWTH_PER_MIN, SPAWN, TIER_WEIGHTS, WEAPON_MAX_LEVEL, WEAPON_DMG_PER_LEVEL, GRID_CELL, MAX_DAMAGE_TEXTS };
+})();
+
+// ── src/spatial.js ──
+__mod["src/spatial.js"] = (() => {
+// 균일 격자 공간 해시. 매 프레임 clear → insert로 다시 채운다.
+// 적 수백 마리의 충돌/타겟 탐색을 "근처 셀만" 보도록 줄이는 용도.
+class SpatialHash {
+  constructor(cellSize) {
+    this.cell = cellSize;
+    this.inv = 1 / cellSize;
+    this.buckets = new Map();
+    this.used = [];
+  }
+
+  key(cx, cy) {
+    return ((cx & 0xffff) << 16) | (cy & 0xffff);
+  }
+
+  clear() {
+    for (const b of this.used) b.length = 0;
+    this.used.length = 0;
+    // 무한 맵이라 버킷이 계속 늘어나므로 가끔 통째로 비운다
+    if (this.buckets.size > 6000) this.buckets.clear();
+  }
+
+  insert(obj) {
+    const k = this.key(Math.floor(obj.x * this.inv), Math.floor(obj.y * this.inv));
+    let b = this.buckets.get(k);
+    if (!b) {
+      b = [];
+      this.buckets.set(k, b);
+    }
+    if (b.length === 0) this.used.push(b);
+    b.push(obj);
+  }
+
+  // 사각 영역에 걸친 셀의 객체를 out에 담는다. 정확한 거리 판정은 호출하는 쪽에서.
+  queryRect(minX, minY, maxX, maxY, out) {
+    out.length = 0;
+    const x0 = Math.floor(minX * this.inv);
+    const x1 = Math.floor(maxX * this.inv);
+    const y0 = Math.floor(minY * this.inv);
+    const y1 = Math.floor(maxY * this.inv);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const b = this.buckets.get(this.key(cx, cy));
+        if (b) for (let i = 0; i < b.length; i++) out.push(b[i]);
+      }
+    }
+    return out;
+  }
+
+  // 가장 가까운 살아있는 객체. 셀 링을 바깥으로 넓혀가다가 더 볼 필요가 없으면 멈춘다.
+  nearest(x, y, maxDist, exclude = null) {
+    const cx = Math.floor(x * this.inv);
+    const cy = Math.floor(y * this.inv);
+    const maxRing = Math.ceil(maxDist * this.inv);
+    let best = null;
+    let bestD2 = maxDist * maxDist;
+    for (let r = 0; r <= maxRing; r++) {
+      // 링 r에 있는 점은 최소 (r-1)*cell 만큼 떨어져 있다
+      if (best && r > 1) {
+        const minD = (r - 1) * this.cell;
+        if (minD * minD >= bestD2) break;
+      }
+      for (let ix = cx - r; ix <= cx + r; ix++) {
+        const edge = ix === cx - r || ix === cx + r;
+        const step = edge || r === 0 ? 1 : 2 * r; // 안쪽 열은 위/아래 끝 셀만
+        for (let iy = cy - r; iy <= cy + r; iy += step) {
+          const b = this.buckets.get(this.key(ix, iy));
+          if (!b) continue;
+          for (let i = 0; i < b.length; i++) {
+            const o = b[i];
+            if (o.dead || (exclude && exclude.has(o))) continue;
+            const dx = o.x - x;
+            const dy = o.y - y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+              bestD2 = d2;
+              best = o;
+            }
+          }
+        }
+      }
+    }
+    return best;
+  }
+}
+
+return { SpatialHash };
+})();
+
+// ── src/util.js ──
+__mod["src/util.js"] = (() => {
+const TAU = Math.PI * 2;
+const DEG = Math.PI / 180;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// -PI ~ PI 범위의 각도 차
+function angleDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= TAU;
+  while (d < -Math.PI) d += TAU;
+  return d;
+}
+
+// 점 (px,py)와 선분 (ax,ay)-(bx,by) 사이 거리의 제곱
+function segDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = clamp(t, 0, 1);
+  const cx = ax + dx * t - px;
+  const cy = ay + dy * t - py;
+  return cx * cx + cy * cy;
+}
+
+function formatTime(sec) {
+  const s = Math.max(0, Math.ceil(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// 배열에서 dead 플래그가 선 객체를 제거한다 (순서 유지, 할당 없음). pool이 있으면 반납.
+function compact(arr, pool) {
+  let j = 0;
+  for (let i = 0; i < arr.length; i++) {
+    const o = arr[i];
+    if (!o.dead) arr[j++] = o;
+    else if (pool) pool.push(o);
+  }
+  arr.length = j;
+}
+
+return { TAU, DEG, rand, pick, clamp, shuffle, angleDiff, segDist2, formatTime, compact };
+})();
+
+// ── src/data/weapons.js ──
+__mod["src/data/weapons.js"] = (() => {
+const { TIER_WEIGHTS } = __mod["src/config.js"];
+const { pick } = __mod["src/util.js"];
+const TIERS = {
+  normal: { label: '노멀', color: '#c9ced6' },
+  rare: { label: '레어', color: '#4aa3ff' },
+  legendary: { label: '전설', color: '#ff9f1c' },
+};
+
+// 유형별 기본값. 무기 정의에서 필요한 것만 덮어쓴다.
+const PROJ = { count: 1, spread: 0, jitter: 0, pierce: 0, knock: 30, size: 3, len: 8, burst: 1, burstInterval: 0, explode: 0 };
+
+const proj = (stats) => ({ type: 'projectile', stats: { ...PROJ, ...stats } });
+const melee = (fx, stats) => ({ type: 'melee', fx, stats });
+const lob = (stats) => ({ type: 'lob', stats: { flight: 0.55, knock: 0, ...stats } });
+
+// 기준 DPS: 노멀 15 / 레어 45 / 전설 135 (1 : 3 : 9)
+// 한 번 발동에 나가는 피해가 전부 한 대상에 맞는다고 가정한 값이다.
+const WEAPONS = [
+  // ── 노멀 ──
+  {
+    id: 'pistol', name: '권총', tier: 'normal', color: '#e8e8e8',
+    desc: '가장 가까운 적에게 한 발씩 쏜다',
+    ...proj({ cd: 0.6, dmg: 9, speed: 600, range: 350, knock: 40 }),
+  },
+  {
+    id: 'shotgun', name: '샷건', tier: 'normal', color: '#f4d35e',
+    desc: '5발을 부채꼴로 흩뿌린다. 가까이서 강하다',
+    ...proj({ cd: 1.2, dmg: 3.6, speed: 550, range: 220, count: 5, spread: 30, jitter: 3, knock: 90, len: 6 }),
+  },
+  {
+    id: 'smg', name: '기관단총', tier: 'normal', color: '#e0e0a0',
+    desc: '약한 탄을 쉴 새 없이 연사한다',
+    ...proj({ cd: 0.12, dmg: 1.8, speed: 700, range: 300, jitter: 6, knock: 10, size: 2, len: 6 }),
+  },
+  {
+    id: 'bat', name: '야구방망이', tier: 'normal', color: '#d9a066',
+    desc: '앞쪽을 크게 휘둘러 적을 날려버린다',
+    ...melee('swing', { cd: 0.8, dmg: 12, radius: 70, arc: 110, knock: 220 }),
+  },
+  {
+    id: 'molotov', name: '화염병', tier: 'normal', color: '#ff6b1a',
+    desc: '적 위치에 던져 2초간 불바다를 만든다',
+    ...lob({ cd: 2.0, dmg: 3.75, range: 300, zone: true, radius: 50, duration: 2, tick: 0.25 }),
+  },
+  {
+    id: 'crossbow', name: '석궁', tier: 'normal', color: '#b5895a',
+    desc: '화살이 적 2명을 꿰뚫는다',
+    ...proj({ cd: 1.0, dmg: 15, speed: 750, range: 420, pierce: 2, knock: 60, len: 12 }),
+  },
+
+  // ── 레어 ──
+  {
+    id: 'sniper', name: '저격소총', tier: 'rare', color: '#9be7ff',
+    desc: '먼 거리의 적을 일직선으로 전부 관통한다',
+    ...proj({ cd: 1.6, dmg: 72, speed: 1600, range: 650, pierce: Infinity, knock: 80, len: 26 }),
+  },
+  {
+    id: 'rifle', name: '돌격소총', tier: 'rare', color: '#ffe066',
+    desc: '3점사로 빠르게 몰아친다',
+    ...proj({ cd: 0.5, dmg: 7.5, speed: 850, range: 380, burst: 3, burstInterval: 0.08, jitter: 2, knock: 20, size: 2.5, len: 10 }),
+  },
+  {
+    id: 'chainsaw', name: '전기톱', tier: 'rare', color: '#ff4d4d',
+    desc: '근처의 적을 쉬지 않고 갈아버린다',
+    ...melee('saw', { cd: 0.1, dmg: 4.5, radius: 55, arc: 120, knock: 15 }),
+  },
+  {
+    id: 'grenade', name: '수류탄', tier: 'rare', color: '#7bd88f',
+    desc: '적 무리에 던져 폭발시킨다',
+    ...lob({ cd: 1.2, dmg: 54, range: 320, flight: 0.6, zone: false, radius: 80, knock: 150 }),
+  },
+
+  // ── 전설 ──
+  {
+    id: 'minigun', name: '미니건', tier: 'legendary', color: '#ffd23f',
+    desc: '탄막으로 앞을 쓸어버린다',
+    ...proj({ cd: 0.05, dmg: 6.75, speed: 900, range: 400, jitter: 7, knock: 12, size: 2.5, len: 10 }),
+  },
+  {
+    id: 'rpg', name: '로켓런처', tier: 'legendary', color: '#ff7043',
+    desc: '첫 적중 시 큰 폭발을 일으킨다',
+    ...proj({ cd: 1.2, dmg: 162, speed: 450, range: 450, explode: 110, knock: 180, size: 5, len: 14 }),
+  },
+  {
+    id: 'flamethrower', name: '화염방사기', tier: 'legendary', color: '#ff9f1c',
+    desc: '원뿔 범위를 계속 불태운다',
+    ...melee('flame', { cd: 0.1, dmg: 13.5, radius: 170, arc: 40, knock: 5 }),
+  },
+  {
+    id: 'railgun', name: '레일건', tier: 'legendary', color: '#c77dff',
+    desc: '화면 끝까지 닿는 관통 빔을 쏜다',
+    type: 'beam', stats: { cd: 1.0, dmg: 135, range: 800, width: 18, knock: 60 },
+  },
+  {
+    id: 'tesla', name: '테슬라 코일', tier: 'legendary', color: '#7df9ff',
+    desc: '번개가 적 사이를 4번 튀어 다닌다',
+    type: 'chain', stats: { cd: 0.4, dmg: 54, range: 320, chainRange: 150, jumps: 4 },
+  },
+];
+
+const BY_TIER = {};
+for (const w of WEAPONS) (BY_TIER[w.tier] ||= []).push(w);
+
+function rollTier() {
+  const total = TIER_WEIGHTS.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [tier, w] of TIER_WEIGHTS) {
+    if ((r -= w) < 0) return tier;
+  }
+  return TIER_WEIGHTS[0][0];
+}
+
+function rollWeapon() {
+  return pick(BY_TIER[rollTier()]);
+}
+
+// 단일 대상 기준 명목 DPS
+function nominalDps(type, s) {
+  switch (type) {
+    case 'projectile':
+      return (s.dmg * s.count * s.burst) / s.cd;
+    case 'lob':
+      return s.zone ? (s.dmg * (s.duration / s.tick)) / s.cd : s.dmg / s.cd;
+    default:
+      return s.dmg / s.cd;
+  }
+}
+
+// Lv3 / Lv5 추가 강화 설명
+const LEVEL_BONUS_TEXT = {
+  projectile: '발사 수 +1',
+  melee: '범위 +20%',
+  lob: '폭발/장판 범위 +30%',
+  beam: '쿨다운 -20%',
+  chain: '연쇄 +2',
+};
+
+return { TIERS, WEAPONS, rollTier, rollWeapon, nominalDps, LEVEL_BONUS_TEXT };
+})();
+
+// ── src/data/names.js ──
+__mod["src/data/names.js"] = (() => {
+const { pick } = __mod["src/util.js"];
+const PREFIX = [
+  '쇠파이프', '문신', '대머리', '외눈', '금니', '빡빡이', '콧수염', '짝귀', '칼자국', '꽁지머리',
+  '깍두기', '주먹', '번개', '곰탱이', '여우', '독사', '망치', '뚝배기', '불도저', '미친개',
+];
+const SURNAME = ['김씨', '이씨', '박씨', '최씨', '정씨', '강씨', '조씨', '윤씨', '장씨', '임씨', '한씨', '오씨'];
+
+// used에 없는 랜덤 별명
+function makeName(used) {
+  for (let i = 0; i < 50; i++) {
+    const n = `${pick(PREFIX)} ${pick(SURNAME)}`;
+    if (!used.has(n)) return n;
+  }
+  return `신입 ${used.size + 1}호`;
+}
+
+return { makeName };
+})();
+
+// ── src/weapons.js ──
+__mod["src/weapons.js"] = (() => {
+// 무기 런타임: 레벨 반영 스탯 계산 + 쿨다운 관리 + 유형별 발동 처리
+const { WEAPON_MAX_LEVEL, WEAPON_DMG_PER_LEVEL } = __mod["src/config.js"];
+const { DEG, rand, angleDiff, segDist2 } = __mod["src/util.js"];
+function computeStats(def, level) {
+  const s = { ...def.stats };
+  const bonus = (level >= 3 ? 1 : 0) + (level >= 5 ? 1 : 0);
+  s.dmg *= 1 + WEAPON_DMG_PER_LEVEL * (level - 1);
+  switch (def.type) {
+    case 'projectile':
+      s.count += bonus;
+      // 원래 단발인 무기는 추가 탄을 10° 간격으로 벌린다
+      if (def.stats.spread === 0 && s.count > 1) s.spread = 10 * (s.count - 1);
+      break;
+    case 'melee':
+      s.radius *= 1 + 0.2 * bonus;
+      break;
+    case 'lob':
+      s.radius *= 1 + 0.3 * bonus;
+      break;
+    case 'beam':
+      s.cd *= Math.pow(0.8, bonus);
+      break;
+    case 'chain':
+      s.jumps += 2 * bonus;
+      break;
+  }
+  // 근접 무기는 닿기 조금 전부터 휘두르기 시작
+  s.targetRange = def.type === 'melee' ? s.radius + 25 : s.range;
+  return s;
+}
+
+function createWeapon(def) {
+  return {
+    def,
+    level: 1,
+    stats: computeStats(def, 1),
+    cd: Math.random() * 0.3, // 동료들이 동시에 쏘지 않게 살짝 어긋나게
+    burstLeft: 0,
+    burstTimer: 0,
+  };
+}
+
+function setWeaponLevel(w, level) {
+  w.level = Math.min(level, WEAPON_MAX_LEVEL);
+  w.stats = computeStats(w.def, w.level);
+}
+
+function updateWeapon(game, u, dt) {
+  const w = u.weapon;
+  const s = w.stats;
+
+  // 점사 진행 중
+  if (w.burstLeft > 0) {
+    w.burstTimer -= dt;
+    if (w.burstTimer <= 0) {
+      const t = game.findTarget(u, s.targetRange);
+      if (t) fire(game, u, w, t);
+      w.burstLeft--;
+      w.burstTimer += s.burstInterval;
+    }
+  }
+
+  if (w.cd > 0) w.cd -= dt;
+  if (w.cd > 0) return;
+
+  const target = game.findTarget(u, s.targetRange);
+  if (!target) {
+    w.cd = 0; // 적이 사거리에 들어오면 바로 쏠 수 있게 대기
+    return;
+  }
+  fire(game, u, w, target);
+  w.cd += s.cd;
+  if (s.burst > 1) {
+    w.burstLeft = s.burst - 1;
+    w.burstTimer = s.burstInterval;
+  }
+}
+
+function fire(game, u, w, t) {
+  const ang = Math.atan2(t.y - u.y, t.x - u.x);
+  u.aim = ang;
+  switch (w.def.type) {
+    case 'projectile': return fireProjectile(game, u, w, ang);
+    case 'melee': return fireMelee(game, u, w, ang);
+    case 'lob': return fireLob(game, u, w, t);
+    case 'beam': return fireBeam(game, u, w, ang);
+    case 'chain': return fireChain(game, u, w, t);
+  }
+}
+
+function fireProjectile(game, u, w, ang) {
+  const s = w.stats;
+  for (let i = 0; i < s.count; i++) {
+    const off = s.count > 1 ? -s.spread / 2 + (s.spread * i) / (s.count - 1) : 0;
+    const a = ang + (off + rand(-s.jitter, s.jitter)) * DEG;
+    game.spawnProjectile(u.x, u.y, Math.cos(a) * s.speed, Math.sin(a) * s.speed, s, w.def.color, u);
+  }
+}
+
+function fireMelee(game, u, w, ang) {
+  const s = w.stats;
+  const half = (s.arc * DEG) / 2;
+  const list = game.queryRadius(u.x, u.y, s.radius + 20, game.tmp);
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (e.dead) continue;
+    const dx = e.x - u.x;
+    const dy = e.y - u.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (dist > s.radius + e.r) continue;
+    // 몸에 붙은 적은 각도와 상관없이 맞는다
+    if (dist > u.r + e.r && Math.abs(angleDiff(Math.atan2(dy, dx), ang)) > half) continue;
+    game.damageEnemy(e, s.dmg, u, dx / dist, dy / dist, s.knock);
+  }
+  game.addFx(w.def.fx, u.x, u.y, {
+    ang, radius: s.radius, arc: s.arc * DEG, color: w.def.color, follow: u,
+    life: w.def.fx === 'swing' ? 0.16 : 0.12,
+  });
+}
+
+function fireLob(game, u, w, t) {
+  game.lobs.push({
+    sx: u.x, sy: u.y, tx: t.x, ty: t.y, t: 0, dur: w.stats.flight,
+    s: w.stats, color: w.def.color, owner: u, dead: false,
+  });
+}
+
+function fireBeam(game, u, w, ang) {
+  const s = w.stats;
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  const ex = u.x + cos * s.range;
+  const ey = u.y + sin * s.range;
+  const pad = s.width / 2 + 16;
+  const list = game.queryRect(
+    Math.min(u.x, ex) - pad, Math.min(u.y, ey) - pad,
+    Math.max(u.x, ex) + pad, Math.max(u.y, ey) + pad, game.tmp,
+  );
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (e.dead) continue;
+    const rr = s.width / 2 + e.r;
+    if (segDist2(e.x, e.y, u.x, u.y, ex, ey) <= rr * rr) game.damageEnemy(e, s.dmg, u, cos, sin, s.knock);
+  }
+  game.addFx('beam', u.x, u.y, { x2: ex, y2: ey, width: s.width, color: w.def.color, life: 0.2 });
+}
+
+function fireChain(game, u, w, first) {
+  const s = w.stats;
+  const hit = new Set();
+  const pts = [u.x, u.y];
+  let cur = first;
+  for (let i = 0; i <= s.jumps && cur; i++) {
+    pts.push(cur.x, cur.y);
+    hit.add(cur);
+    game.damageEnemy(cur, s.dmg, u, 0, 0, 0);
+    cur = game.grid.nearest(cur.x, cur.y, s.chainRange, hit);
+  }
+  game.addFx('chain', u.x, u.y, { pts, color: w.def.color, life: 0.15 });
+}
+
+return { computeStats, createWeapon, setWeaponLevel, updateWeapon };
+})();
+
+// ── src/game.js ──
+__mod["src/game.js"] = (() => {
+const C = __mod["src/config.js"];
+const { SpatialHash } = __mod["src/spatial.js"];
+const { rollWeapon, TIERS } = __mod["src/data/weapons.js"];
+const { makeName } = __mod["src/data/names.js"];
+const { createWeapon, setWeaponLevel, updateWeapon } = __mod["src/weapons.js"];
+const { TAU, rand, shuffle, segDist2, compact } = __mod["src/util.js"];
+// state: title → playing ⇄ (levelup | paused) → gameover | victory
+class Game {
+  constructor(ui, input) {
+    this.ui = ui;
+    this.input = input;
+    this.grid = new SpatialHash(C.GRID_CELL);
+    this.tmp = []; // 쿼리 결과 버퍼 (중첩 쿼리 금지)
+    this.tmp2 = []; // 폭발 전용 버퍼 (투사체 루프 안에서 불리므로 분리)
+    this.projPool = [];
+    this.textPool = [];
+    this.fps = 60;
+    this.debug = { on: false, invincible: false };
+    this.reset();
+  }
+
+  get leader() {
+    return this.units[0];
+  }
+
+  reset() {
+    this.state = 'title';
+    this.time = 0;
+    this.level = 1;
+    this.xp = 0;
+    this.xpNeed = C.XP_CURVE.first;
+    this.pendingLevels = 0;
+    this.kills = 0;
+    this.nextId = 1;
+    this.units = []; // 살아있는 갱. units[0] = 주인공
+    this.roster = []; // 거쳐간 모든 유닛 (결과 화면용)
+    this.dead = []; // 사망 명단 (M3 부활용)
+    this.usedNames = new Set();
+    this.enemies = [];
+    this.projectiles = [];
+    this.lobs = [];
+    this.zones = [];
+    this.gems = [];
+    this.fx = [];
+    this.texts = [];
+    this.notices = [];
+    this.spawnAcc = 0;
+    this.shake = 0;
+    this.camX = 0;
+    this.camY = 0;
+  }
+
+  start() {
+    this.reset();
+    const leader = this.createUnit(true, rollWeapon(), 0, 0);
+    const t = TIERS[leader.weapon.def.tier];
+    this.notice(`시작 무기: ${leader.weapon.def.name} [${t.label}]`, t.color);
+    this.state = 'playing';
+    this.ui.hide();
+  }
+
+  createUnit(isLeader, def, x, y, name) {
+    const base = isLeader ? C.LEADER : C.COMPANION;
+    const u = {
+      id: this.nextId++,
+      isLeader,
+      name: isLeader ? '두목 (나)' : name || makeName(this.usedNames),
+      x, y, vx: 0, vy: 0,
+      r: base.radius,
+      hp: base.hp,
+      maxHp: base.hp,
+      iframe: 0,
+      flash: 0,
+      joinFx: isLeader ? 0 : 0.6,
+      aim: 0,
+      weapon: createWeapon(def),
+      dmgDealt: 0,
+      alive: true,
+    };
+    this.usedNames.add(u.name);
+    this.units.push(u);
+    this.roster.push(u);
+    return u;
+  }
+
+  // ─── 입력 (렌더 프레임마다 1회) ───────────────────────────
+  handleInput() {
+    const inp = this.input;
+    if (inp.consume('F1') || inp.consume('Backquote')) this.debug.on = !this.debug.on;
+    if (inp.consume('Escape') || inp.consume('KeyP')) this.togglePause();
+    if (this.debug.on && this.state === 'playing') {
+      if (inp.consume('KeyI')) this.debug.invincible = !this.debug.invincible;
+      if (inp.consume('KeyL')) this.gainXp(this.xpNeed - this.xp);
+      if (inp.consume('KeyT')) this.time = Math.min(C.RUN_TIME - 1, this.time + 30);
+    }
+    inp.endFrame();
+  }
+
+  togglePause() {
+    if (this.state === 'playing') {
+      this.state = 'paused';
+      this.ui.showPause(this, () => this.togglePause());
+    } else if (this.state === 'paused') {
+      this.state = 'playing';
+      this.ui.hide();
+    }
+  }
+
+  pause() {
+    if (this.state === 'playing') this.togglePause();
+  }
+
+  // ─── 메인 업데이트 ───────────────────────────────────────
+  update(dt) {
+    if (this.state !== 'playing') return;
+    this.updateNotices(dt);
+
+    this.time += dt;
+    if (this.time >= C.RUN_TIME) {
+      this.finish(true);
+      return;
+    }
+
+    this.updateLeader(dt);
+    this.updateCompanions(dt);
+    this.spawnEnemies(dt);
+    this.updateEnemies(dt);
+    this.rebuildGrid();
+    this.separateEnemies();
+    this.contactDamage();
+    if (this.state !== 'playing') return; // 주인공 사망
+
+    for (let i = 0; i < this.units.length; i++) updateWeapon(this, this.units[i], dt);
+    this.updateProjectiles(dt);
+    this.updateLobs(dt);
+    this.updateZones(dt);
+    compact(this.enemies);
+
+    this.updateGems(dt);
+    this.updateFx(dt);
+    this.shake = Math.max(0, this.shake - dt * 30);
+
+    if (this.pendingLevels > 0) this.openLevelUp();
+  }
+
+  // ─── 갱 ─────────────────────────────────────────────────
+  updateLeader(dt) {
+    const L = this.leader;
+    const a = this.input.axis();
+    L.vx = a.x * C.LEADER.speed;
+    L.vy = a.y * C.LEADER.speed;
+    L.x += L.vx * dt;
+    L.y += L.vy * dt;
+    this.camX = L.x;
+    this.camY = L.y;
+    this.tickUnit(L, dt);
+  }
+
+  // 군집 이동: 주인공 쪽으로 끌림 + 동료끼리 밀어냄 + 속도 보간(지연감)
+  updateCompanions(dt) {
+    const L = this.leader;
+    const G = C.GANG;
+    const maxSpeed = C.LEADER.speed * G.speedMul;
+    const a = Math.min(1, dt * G.accel);
+    for (let i = 1; i < this.units.length; i++) {
+      const u = this.units[i];
+      const dx = L.x - u.x;
+      const dy = L.y - u.y;
+      const d = Math.hypot(dx, dy) || 1;
+
+      if (d > G.teleportDist) {
+        const ang = rand(0, TAU);
+        u.x = L.x + Math.cos(ang) * G.minDist;
+        u.y = L.y + Math.sin(ang) * G.minDist;
+        u.vx = u.vy = 0;
+        continue;
+      }
+
+      let tx = 0;
+      let ty = 0;
+      if (d > G.minDist) {
+        const k = Math.min(1, (d - G.minDist) / (G.maxDist - G.minDist));
+        tx = (dx / d) * maxSpeed * k;
+        ty = (dy / d) * maxSpeed * k;
+      }
+      for (let j = 0; j < this.units.length; j++) {
+        if (j === i) continue;
+        const o = this.units[j];
+        const ox = u.x - o.x;
+        const oy = u.y - o.y;
+        const od = Math.hypot(ox, oy);
+        if (od < G.separation && od > 0.001) {
+          const push = ((G.separation - od) / G.separation) * maxSpeed * 1.2;
+          tx += (ox / od) * push;
+          ty += (oy / od) * push;
+        }
+      }
+      u.vx += (tx - u.vx) * a;
+      u.vy += (ty - u.vy) * a;
+      u.x += u.vx * dt;
+      u.y += u.vy * dt;
+      this.tickUnit(u, dt);
+    }
+  }
+
+  tickUnit(u, dt) {
+    if (u.iframe > 0) u.iframe -= dt;
+    if (u.flash > 0) u.flash -= dt;
+    if (u.joinFx > 0) u.joinFx -= dt;
+  }
+
+  contactDamage() {
+    // 뒤에서부터 돌아야 동료가 죽어서 빠져도 안전
+    for (let i = this.units.length - 1; i >= 0; i--) {
+      const u = this.units[i];
+      const list = this.queryRadius(u.x, u.y, u.r + 16, this.tmp);
+      let hitBy = null;
+      for (let k = 0; k < list.length; k++) {
+        const e = list[k];
+        if (e.dead) continue;
+        const dx = e.x - u.x;
+        const dy = e.y - u.y;
+        const rr = u.r + e.r;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= rr * rr) continue;
+        // 적을 유닛 바깥으로 밀어내서 갱이 단단한 몸처럼 느껴지게
+        const d = Math.sqrt(d2) || 1;
+        e.x += (dx / d) * (rr - d);
+        e.y += (dy / d) * (rr - d);
+        if (!hitBy) hitBy = e;
+      }
+      if (hitBy && u.iframe <= 0) {
+        this.hurtUnit(u, hitBy.damage);
+        if (this.state !== 'playing') return;
+      }
+    }
+  }
+
+  hurtUnit(u, dmg) {
+    if (this.debug.invincible) return;
+    u.hp -= dmg;
+    u.iframe = C.HIT_IFRAME;
+    u.flash = 0.15;
+    if (u.isLeader) this.shake = Math.max(this.shake, 6);
+    if (u.hp <= 0) this.killUnit(u);
+  }
+
+  killUnit(u) {
+    u.alive = false;
+    u.hp = 0;
+    this.addFx('death', u.x, u.y, { color: '#ff4d4d', life: 0.5 });
+    if (u.isLeader) {
+      this.finish(false);
+      return;
+    }
+    this.units.splice(this.units.indexOf(u), 1);
+    this.dead.push(u);
+    this.notice(`${u.name} 사망`, '#ff6b6b');
+  }
+
+  // ─── 적 ─────────────────────────────────────────────────
+  spawnRing() {
+    return Math.hypot(C.VIEW_W / 2, C.VIEW_H / 2) + C.SPAWN.ringMargin;
+  }
+
+  spawnEnemies(dt) {
+    const min = this.time / 60;
+    const S = C.SPAWN;
+    this.spawnAcc += (S.baseRate + S.ratePerMin * min) * dt;
+    while (this.spawnAcc >= 1) {
+      this.spawnAcc -= 1;
+      this.spawnWalker();
+    }
+    const minAlive = S.baseMinAlive + S.minAlivePerMin * min;
+    for (let guard = 0; guard < 10 && this.enemies.length < minAlive; guard++) this.spawnWalker();
+  }
+
+  spawnWalker() {
+    if (this.enemies.length >= C.ENEMY_CAP) return;
+    const L = this.leader;
+    const W = C.WALKER;
+    const ang = rand(0, TAU);
+    const r = this.spawnRing();
+    const hp = W.hp * (1 + C.ENEMY_HP_GROWTH_PER_MIN * (this.time / 60));
+    this.enemies.push({
+      id: this.nextId++,
+      x: L.x + Math.cos(ang) * r,
+      y: L.y + Math.sin(ang) * r,
+      kbx: 0, kby: 0,
+      hp, maxHp: hp,
+      speed: W.speed * rand(0.9, 1.1),
+      damage: W.damage,
+      r: W.radius,
+      xp: W.xp,
+      target: null,
+      retarget: rand(0, 0.25),
+      flash: 0,
+      dead: false,
+    });
+  }
+
+  nearestUnit(x, y) {
+    let best = null;
+    let bestD2 = Infinity;
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
+      const d2 = (u.x - x) ** 2 + (u.y - y) ** 2;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = u;
+      }
+    }
+    return best;
+  }
+
+  updateEnemies(dt) {
+    const L = this.leader;
+    const relocate2 = C.SPAWN.relocateDist ** 2;
+    const kbDecay = Math.exp(-8 * dt);
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      e.retarget -= dt;
+      if (e.retarget <= 0 || !e.target || !e.target.alive) {
+        e.target = this.nearestUnit(e.x, e.y);
+        e.retarget = 0.25;
+      }
+      const t = e.target;
+      const dx = t.x - e.x;
+      const dy = t.y - e.y;
+      const d = Math.hypot(dx, dy) || 1;
+      e.x += (dx / d) * e.speed * dt + e.kbx * dt;
+      e.y += (dy / d) * e.speed * dt + e.kby * dt;
+      e.kbx *= kbDecay;
+      e.kby *= kbDecay;
+      if (e.flash > 0) e.flash -= dt;
+
+      // 너무 멀어진 적은 주인공 반대편(진행 방향 앞쪽)으로 재배치
+      const lx = e.x - L.x;
+      const ly = e.y - L.y;
+      const l2 = lx * lx + ly * ly;
+      if (l2 > relocate2) {
+        const ld = Math.sqrt(l2);
+        const r = this.spawnRing();
+        e.x = L.x - (lx / ld) * r;
+        e.y = L.y - (ly / ld) * r;
+      }
+    }
+  }
+
+  rebuildGrid() {
+    this.grid.clear();
+    for (let i = 0; i < this.enemies.length; i++) this.grid.insert(this.enemies[i]);
+  }
+
+  // 적끼리 겹침 완화 (완전한 물리는 아님)
+  separateEnemies() {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      const list = this.queryRadius(e.x, e.y, e.r * 2 + 2, this.tmp);
+      for (let k = 0; k < list.length; k++) {
+        const o = list[k];
+        if (o.id <= e.id) continue; // 쌍마다 한 번만
+        const dx = o.x - e.x;
+        const dy = o.y - e.y;
+        const rr = e.r + o.r;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= rr * rr || d2 < 0.0001) continue;
+        const d = Math.sqrt(d2);
+        const push = (rr - d) * 0.25;
+        e.x -= (dx / d) * push;
+        e.y -= (dy / d) * push;
+        o.x += (dx / d) * push;
+        o.y += (dy / d) * push;
+      }
+    }
+  }
+
+  queryRadius(x, y, r, out) {
+    return this.grid.queryRect(x - r, y - r, x + r, y + r, out);
+  }
+
+  queryRect(x0, y0, x1, y1, out) {
+    return this.grid.queryRect(x0, y0, x1, y1, out);
+  }
+
+  findTarget(u, range) {
+    return this.grid.nearest(u.x, u.y, range);
+  }
+
+  damageEnemy(e, dmg, owner, kx, ky, knock) {
+    if (e.dead) return;
+    owner.dmgDealt += Math.min(dmg, e.hp);
+    e.hp -= dmg;
+    e.flash = 0.08;
+    if (knock) {
+      e.kbx += kx * knock;
+      e.kby += ky * knock;
+    }
+    this.addText(e.x, e.y - e.r, dmg);
+    if (e.hp <= 0) {
+      e.dead = true;
+      this.kills++;
+      this.dropGem(e.x, e.y, e.xp);
+    }
+  }
+
+  // ─── 투사체 / 투척 / 장판 / 폭발 ─────────────────────────
+  spawnProjectile(x, y, vx, vy, s, color, owner) {
+    const p = this.projPool.pop() || { hit: [] };
+    p.x = x;
+    p.y = y;
+    p.vx = vx;
+    p.vy = vy;
+    p.dmg = s.dmg;
+    p.pierce = s.pierce;
+    p.life = s.range / s.speed;
+    p.r = s.size;
+    p.len = s.len;
+    p.knock = s.knock;
+    p.explode = s.explode;
+    p.color = color;
+    p.owner = owner;
+    p.hit.length = 0;
+    p.dead = false;
+    this.projectiles.push(p);
+  }
+
+  updateProjectiles(dt) {
+    for (let i = 0; i < this.projectiles.length; i++) {
+      const p = this.projectiles[i];
+      const nx = p.x + p.vx * dt;
+      const ny = p.y + p.vy * dt;
+      const pad = p.r + 16;
+      // 이번 프레임 이동 경로(선분) 전체로 판정해서 빠른 탄이 적을 뚫고 지나가지 않게
+      const list = this.queryRect(
+        Math.min(p.x, nx) - pad, Math.min(p.y, ny) - pad,
+        Math.max(p.x, nx) + pad, Math.max(p.y, ny) + pad, this.tmp,
+      );
+      const spd = Math.hypot(p.vx, p.vy) || 1;
+      const kx = p.vx / spd;
+      const ky = p.vy / spd;
+      for (let k = 0; k < list.length; k++) {
+        const e = list[k];
+        if (e.dead || p.hit.includes(e.id)) continue;
+        const rr = e.r + p.r;
+        if (segDist2(e.x, e.y, p.x, p.y, nx, ny) > rr * rr) continue;
+        if (p.explode) {
+          this.explode(e.x, e.y, p.explode, p.dmg, p.owner, p.color, p.knock);
+          p.dead = true;
+          break;
+        }
+        this.damageEnemy(e, p.dmg, p.owner, kx, ky, p.knock);
+        if (p.pierce <= 0) {
+          p.dead = true;
+          break;
+        }
+        p.pierce--;
+        p.hit.push(e.id);
+      }
+      if (p.dead) continue;
+      p.x = nx;
+      p.y = ny;
+      p.life -= dt;
+      if (p.life <= 0) {
+        if (p.explode) this.explode(p.x, p.y, p.explode, p.dmg, p.owner, p.color, p.knock);
+        p.dead = true;
+      }
+    }
+    compact(this.projectiles, this.projPool);
+  }
+
+  updateLobs(dt) {
+    for (let i = 0; i < this.lobs.length; i++) {
+      const l = this.lobs[i];
+      l.t += dt;
+      if (l.t < l.dur) continue;
+      l.dead = true;
+      const s = l.s;
+      if (s.zone) {
+        this.zones.push({
+          x: l.tx, y: l.ty, r: s.radius, life: s.duration, maxLife: s.duration,
+          tick: s.tick, timer: 0, dmg: s.dmg, owner: l.owner, color: l.color, dead: false,
+        });
+      } else {
+        this.explode(l.tx, l.ty, s.radius, s.dmg, l.owner, l.color, s.knock);
+      }
+    }
+    compact(this.lobs);
+  }
+
+  updateZones(dt) {
+    for (let i = 0; i < this.zones.length; i++) {
+      const z = this.zones[i];
+      z.timer -= dt;
+      if (z.timer <= 0) {
+        z.timer += z.tick;
+        const list = this.queryRadius(z.x, z.y, z.r + 16, this.tmp);
+        for (let k = 0; k < list.length; k++) {
+          const e = list[k];
+          if (e.dead) continue;
+          const rr = z.r + e.r * 0.5;
+          if ((e.x - z.x) ** 2 + (e.y - z.y) ** 2 <= rr * rr) this.damageEnemy(e, z.dmg, z.owner, 0, 0, 0);
+        }
+      }
+      z.life -= dt;
+      if (z.life <= 0) z.dead = true;
+    }
+    compact(this.zones);
+  }
+
+  explode(x, y, r, dmg, owner, color, knock) {
+    const list = this.queryRadius(x, y, r + 16, this.tmp2);
+    for (let k = 0; k < list.length; k++) {
+      const e = list[k];
+      if (e.dead) continue;
+      const dx = e.x - x;
+      const dy = e.y - y;
+      const d = Math.hypot(dx, dy);
+      if (d > r + e.r) continue;
+      this.damageEnemy(e, dmg, owner, dx / (d || 1), dy / (d || 1), knock);
+    }
+    this.addFx('explosion', x, y, { radius: r, color, life: 0.3 });
+  }
+
+  // ─── 경험치 / 레벨업 ────────────────────────────────────
+  dropGem(x, y, v) {
+    if (this.gems.length >= C.GEM_CAP) {
+      // 너무 많으면 기존 조각에 합쳐서 개수를 묶어둔다
+      this.gems[(Math.random() * this.gems.length) | 0].v += v;
+      return;
+    }
+    this.gems.push({ x, y, v, mag: null, spd: 0, dead: false });
+  }
+
+  updateGems(dt) {
+    const pr2 = C.PICKUP_RADIUS * C.PICKUP_RADIUS;
+    for (let i = 0; i < this.gems.length; i++) {
+      const g = this.gems[i];
+      if (g.mag && !g.mag.alive) g.mag = null;
+      if (!g.mag) {
+        // 갱 유닛 누구든 가까이 오면 끌려간다
+        for (let k = 0; k < this.units.length; k++) {
+          const u = this.units[k];
+          if ((u.x - g.x) ** 2 + (u.y - g.y) ** 2 < pr2) {
+            g.mag = u;
+            g.spd = 120;
+            break;
+          }
+        }
+        if (!g.mag) continue;
+      }
+      const u = g.mag;
+      const dx = u.x - g.x;
+      const dy = u.y - g.y;
+      const d = Math.hypot(dx, dy) || 1;
+      g.spd = Math.min(g.spd + 900 * dt, 900);
+      if (d < u.r + 6 || d < g.spd * dt) {
+        this.gainXp(g.v);
+        g.dead = true;
+        continue;
+      }
+      g.x += (dx / d) * g.spd * dt;
+      g.y += (dy / d) * g.spd * dt;
+    }
+    compact(this.gems);
+  }
+
+  gainXp(v) {
+    this.xp += v;
+    while (this.xp >= this.xpNeed) {
+      this.xp -= this.xpNeed;
+      this.level++;
+      this.xpNeed = C.XP_CURVE.first + (this.level - 1) * C.XP_CURVE.step;
+      this.pendingLevels++;
+    }
+  }
+
+  makeOffer() {
+    if (this.units.length - 1 < C.MAX_COMPANIONS) {
+      const used = new Set(this.usedNames);
+      const cards = [];
+      for (let i = 0; i < 3; i++) {
+        const name = makeName(used);
+        used.add(name);
+        cards.push({ def: rollWeapon(), name });
+      }
+      return { kind: 'recruit', cards };
+    }
+    const candidates = shuffle(this.units.filter((u) => u.weapon.level < C.WEAPON_MAX_LEVEL));
+    if (candidates.length === 0) return { kind: 'heal', cards: [{}] };
+    return { kind: 'upgrade', cards: candidates.slice(0, 3).map((unit) => ({ unit })) };
+  }
+
+  openLevelUp() {
+    this.state = 'levelup';
+    const offer = this.makeOffer();
+    const reachedLevel = this.level - this.pendingLevels + 1;
+    this.ui.showLevelUp(offer, reachedLevel, this, (i) => this.applyChoice(offer, i));
+  }
+
+  applyChoice(offer, i) {
+    const c = offer.cards[i];
+    if (offer.kind === 'recruit') {
+      const L = this.leader;
+      const ang = rand(0, TAU);
+      const u = this.createUnit(false, c.def, L.x + Math.cos(ang) * 50, L.y + Math.sin(ang) * 50, c.name);
+      const t = TIERS[c.def.tier];
+      this.notice(`${u.name} 합류 — ${c.def.name} [${t.label}]`, t.color);
+    } else if (offer.kind === 'upgrade') {
+      const w = c.unit.weapon;
+      setWeaponLevel(w, w.level + 1);
+      this.notice(`${c.unit.name}의 ${w.def.name} Lv${w.level}`, TIERS[w.def.tier].color);
+    } else {
+      for (const u of this.units) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.3);
+      this.notice('갱 전원 HP 30% 회복', '#7bd88f');
+    }
+    this.pendingLevels--;
+    if (this.pendingLevels > 0) {
+      this.openLevelUp();
+    } else {
+      this.state = 'playing';
+      this.ui.hide();
+    }
+  }
+
+  finish(victory) {
+    this.state = victory ? 'victory' : 'gameover';
+    this.ui.showResult(this, victory, () => this.start());
+  }
+
+  // ─── 연출 ───────────────────────────────────────────────
+  addFx(type, x, y, props) {
+    this.fx.push({ type, x, y, maxLife: props.life, dead: false, ...props });
+  }
+
+  updateFx(dt) {
+    for (let i = 0; i < this.fx.length; i++) {
+      const f = this.fx[i];
+      f.life -= dt;
+      if (f.life <= 0) f.dead = true;
+    }
+    compact(this.fx);
+    for (let i = 0; i < this.texts.length; i++) {
+      const t = this.texts[i];
+      t.y -= 40 * dt;
+      t.life -= dt;
+      if (t.life <= 0) t.dead = true;
+    }
+    compact(this.texts, this.textPool);
+  }
+
+  addText(x, y, value) {
+    if (this.texts.length >= C.MAX_DAMAGE_TEXTS) return;
+    const t = this.textPool.pop() || {};
+    t.x = x + rand(-6, 6);
+    t.y = y;
+    t.text = String(Math.max(1, Math.round(value)));
+    t.life = 0.5;
+    t.dead = false;
+    this.texts.push(t);
+  }
+
+  notice(text, color) {
+    this.notices.push({ text, color, life: 3 });
+    if (this.notices.length > 5) this.notices.shift();
+  }
+
+  updateNotices(dt) {
+    for (const n of this.notices) n.life -= dt;
+    while (this.notices.length && this.notices[0].life <= 0) this.notices.shift();
+  }
+}
+
+return { Game };
+})();
+
+// ── src/render.js ──
+__mod["src/render.js"] = (() => {
+const { VIEW_W, VIEW_H, RUN_TIME, MAX_COMPANIONS } = __mod["src/config.js"];
+const { TIERS } = __mod["src/data/weapons.js"];
+const { TAU, formatTime } = __mod["src/util.js"];
+const COL = {
+  bg: '#1b1d22',
+  tileA: '#20232a',
+  tileB: '#1d2026',
+  debris: '#2b2f38',
+  enemy: '#5f8f3e',
+  enemyEdge: '#34521f',
+  leader: '#ffd23f',
+  edge: '#0b0c0f',
+  gem: '#5ab4ff',
+  gemBig: '#7bd88f',
+  xp: '#4aa3ff',
+  hp: '#e5484d',
+};
+
+function render(ctx, game, scale) {
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+  const cx = game.camX;
+  const cy = game.camY;
+  let sx = 0;
+  let sy = 0;
+  if (game.shake > 0) {
+    sx = (Math.random() * 2 - 1) * game.shake;
+    sy = (Math.random() * 2 - 1) * game.shake;
+  }
+  const view = {
+    x0: cx - VIEW_W / 2 - 60, y0: cy - VIEW_H / 2 - 60,
+    x1: cx + VIEW_W / 2 + 60, y1: cy + VIEW_H / 2 + 60,
+  };
+
+  ctx.save();
+  ctx.translate(Math.round(VIEW_W / 2 - cx + sx), Math.round(VIEW_H / 2 - cy + sy));
+  drawGround(ctx, view);
+  if (game.state !== 'title') {
+    drawZones(ctx, game);
+    drawGems(ctx, game, view);
+    drawEnemies(ctx, game, view);
+    drawUnits(ctx, game);
+    drawProjectiles(ctx, game, view);
+    drawLobs(ctx, game);
+    drawFx(ctx, game);
+    drawTexts(ctx, game);
+  }
+  ctx.restore();
+
+  if (game.state !== 'title') drawHud(ctx, game);
+}
+
+function inView(v, x, y) {
+  return x > v.x0 && x < v.x1 && y > v.y0 && y < v.y1;
+}
+
+function hash(x, y) {
+  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+// 무한 맵 느낌만 나게 체크 타일 + 해시 기반 잔해
+function drawGround(ctx, v) {
+  const T = 128;
+  const ix0 = Math.floor(v.x0 / T);
+  const ix1 = Math.floor(v.x1 / T);
+  const iy0 = Math.floor(v.y0 / T);
+  const iy1 = Math.floor(v.y1 / T);
+  for (let ix = ix0; ix <= ix1; ix++) {
+    for (let iy = iy0; iy <= iy1; iy++) {
+      ctx.fillStyle = (ix + iy) & 1 ? COL.tileA : COL.tileB;
+      ctx.fillRect(ix * T, iy * T, T, T);
+    }
+  }
+  ctx.fillStyle = COL.debris;
+  for (let ix = ix0; ix <= ix1; ix++) {
+    for (let iy = iy0; iy <= iy1; iy++) {
+      const h = hash(ix, iy);
+      if (h % 3 !== 0) continue;
+      ctx.fillRect(ix * T + ((h >>> 3) % 110), iy * T + ((h >>> 10) % 110), 5 + ((h >>> 4) % 14), 3 + ((h >>> 7) % 6));
+    }
+  }
+}
+
+function drawZones(ctx, game) {
+  for (const z of game.zones) {
+    const a = Math.min(1, z.life / 0.3);
+    ctx.globalAlpha = (0.28 + Math.random() * 0.08) * a;
+    ctx.fillStyle = z.color;
+    ctx.beginPath();
+    ctx.arc(z.x, z.y, z.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawGems(ctx, game, v) {
+  for (const big of [false, true]) {
+    ctx.fillStyle = big ? COL.gemBig : COL.gem;
+    ctx.beginPath();
+    for (const g of game.gems) {
+      if (g.v >= 10 !== big || !inView(v, g.x, g.y)) continue;
+      const s = big ? 6 : 4;
+      ctx.moveTo(g.x, g.y - s - 1);
+      ctx.lineTo(g.x + s, g.y);
+      ctx.lineTo(g.x, g.y + s + 1);
+      ctx.lineTo(g.x - s, g.y);
+      ctx.closePath();
+    }
+    ctx.fill();
+  }
+}
+
+function drawEnemies(ctx, game, v) {
+  // 같은 색끼리 한 번에 채워서 draw call을 줄인다
+  ctx.lineWidth = 2;
+  for (const flashing of [false, true]) {
+    ctx.fillStyle = flashing ? '#ffffff' : COL.enemy;
+    ctx.strokeStyle = COL.enemyEdge;
+    ctx.beginPath();
+    for (const e of game.enemies) {
+      if (e.flash > 0 !== flashing || !inView(v, e.x, e.y)) continue;
+      ctx.moveTo(e.x + e.r, e.y);
+      ctx.arc(e.x, e.y, e.r, 0, TAU);
+    }
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function drawUnits(ctx, game) {
+  // 동료 먼저, 주인공은 맨 위에
+  for (let i = game.units.length - 1; i >= 0; i--) {
+    const u = game.units[i];
+    const def = u.weapon.def;
+    const blink = u.iframe > 0 && Math.floor(u.iframe * 20) % 2 === 0;
+    ctx.globalAlpha = blink ? 0.45 : 1;
+
+    // 총구 방향
+    const bx = u.x + Math.cos(u.aim) * (u.r + 9);
+    const by = u.y + Math.sin(u.aim) * (u.r + 9);
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = COL.edge;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(u.x, u.y);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // 몸통: 주인공 = 금색, 동료 = 무기 티어 색
+    ctx.fillStyle = u.flash > 0 ? '#ffffff' : u.isLeader ? COL.leader : TIERS[def.tier].color;
+    ctx.strokeStyle = COL.edge;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(u.x, u.y, u.r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+    if (u.isLeader) {
+      ctx.fillStyle = TIERS[def.tier].color;
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, u.r * 0.42, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, u.r + 4, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    if (!u.isLeader && u.hp < u.maxHp) {
+      const w = 24;
+      const x = u.x - w / 2;
+      const y = u.y - u.r - 9;
+      ctx.fillStyle = '#000a';
+      ctx.fillRect(x - 1, y - 1, w + 2, 5);
+      ctx.fillStyle = COL.hp;
+      ctx.fillRect(x, y, (w * u.hp) / u.maxHp, 3);
+    }
+
+    if (u.joinFx > 0) {
+      const a = u.joinFx / 0.6;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = TIERS[def.tier].color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(u.x, u.y, u.r + 4 + (1 - a) * 30, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawProjectiles(ctx, game, v) {
+  ctx.lineCap = 'round';
+  for (const p of game.projectiles) {
+    if (!inView(v, p.x, p.y)) continue;
+    const spd = Math.hypot(p.vx, p.vy) || 1;
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = p.r * 1.4;
+    ctx.beginPath();
+    ctx.moveTo(p.x - (p.vx / spd) * p.len, p.y - (p.vy / spd) * p.len);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+}
+
+function drawLobs(ctx, game) {
+  for (const l of game.lobs) {
+    const k = l.t / l.dur;
+    const x = l.sx + (l.tx - l.sx) * k;
+    const y = l.sy + (l.ty - l.sy) * k;
+    const h = Math.sin(k * Math.PI) * 70;
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(x, y, 6, 3, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = l.color;
+    ctx.strokeStyle = COL.edge;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y - h, 5, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function wedge(ctx, x, y, r, ang, arc) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.arc(x, y, r, ang - arc / 2, ang + arc / 2);
+  ctx.closePath();
+}
+
+function drawFx(ctx, game) {
+  for (const f of game.fx) {
+    const a = Math.max(0, f.life / f.maxLife);
+    const x = f.follow ? f.follow.x : f.x;
+    const y = f.follow ? f.follow.y : f.y;
+    switch (f.type) {
+      case 'swing':
+        ctx.globalAlpha = 0.35 * a;
+        ctx.fillStyle = f.color;
+        wedge(ctx, x, y, f.radius, f.ang, f.arc);
+        ctx.fill();
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, f.radius, f.ang - f.arc / 2, f.ang + f.arc / 2);
+        ctx.stroke();
+        break;
+      case 'saw':
+        ctx.globalAlpha = 0.22 * a;
+        ctx.fillStyle = f.color;
+        wedge(ctx, x, y, f.radius, f.ang, f.arc);
+        ctx.fill();
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = '#ddd';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+          const ang = f.ang + (Math.random() - 0.5) * f.arc;
+          const r0 = f.radius * (0.3 + Math.random() * 0.4);
+          ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0);
+          ctx.lineTo(x + Math.cos(ang) * f.radius, y + Math.sin(ang) * f.radius);
+        }
+        ctx.stroke();
+        break;
+      case 'flame':
+        ctx.globalAlpha = 0.18 * a;
+        ctx.fillStyle = f.color;
+        wedge(ctx, x, y, f.radius, f.ang, f.arc);
+        ctx.fill();
+        ctx.globalAlpha = 0.8 * a;
+        ctx.fillStyle = Math.random() < 0.5 ? '#ffd23f' : '#ff6b1a';
+        ctx.beginPath();
+        for (let i = 0; i < 4; i++) {
+          const ang = f.ang + (Math.random() - 0.5) * f.arc;
+          const r0 = f.radius * Math.random();
+          const px = x + Math.cos(ang) * r0;
+          const py = y + Math.sin(ang) * r0;
+          ctx.moveTo(px + 5, py);
+          ctx.arc(px, py, 3 + Math.random() * 4, 0, TAU);
+        }
+        ctx.fill();
+        break;
+      case 'beam':
+        ctx.globalAlpha = a;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = f.width * a;
+        ctx.beginPath();
+        ctx.moveTo(f.x, f.y);
+        ctx.lineTo(f.x2, f.y2);
+        ctx.stroke();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = f.width * 0.3 * a;
+        ctx.stroke();
+        break;
+      case 'chain': {
+        ctx.globalAlpha = a;
+        const p = f.pts;
+        ctx.beginPath();
+        ctx.moveTo(p[0], p[1]);
+        for (let i = 2; i < p.length; i += 2) {
+          const mx = (p[i - 2] + p[i]) / 2 + (Math.random() - 0.5) * 18;
+          const my = (p[i - 1] + p[i + 1]) / 2 + (Math.random() - 0.5) * 18;
+          ctx.lineTo(mx, my);
+          ctx.lineTo(p[i], p[i + 1]);
+        }
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        break;
+      }
+      case 'explosion':
+        ctx.globalAlpha = 0.4 * a;
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(x, y, f.radius * (0.6 + 0.4 * (1 - a)), 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        break;
+      case 'death':
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 10 + (1 - a) * 30, 0, TAU);
+        ctx.stroke();
+        break;
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTexts(ctx, game) {
+  ctx.font = 'bold 12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const t of game.texts) {
+    ctx.globalAlpha = Math.min(1, t.life / 0.25);
+    ctx.fillStyle = '#000';
+    ctx.fillText(t.text, t.x + 1, t.y + 1);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function label(ctx, text, x, y, color = '#fff', align = 'left') {
+  ctx.textAlign = align;
+  ctx.fillStyle = '#000';
+  ctx.fillText(text, x + 1, y + 1);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+function drawHud(ctx, game) {
+  ctx.textBaseline = 'middle';
+
+  // 경험치 바
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, VIEW_W, 10);
+  ctx.fillStyle = COL.xp;
+  ctx.fillRect(0, 0, (VIEW_W * game.xp) / game.xpNeed, 10);
+
+  // 남은 시간
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  const remain = RUN_TIME - game.time;
+  label(ctx, formatTime(remain), VIEW_W / 2, 38, remain <= 30 ? '#ff6b6b' : '#fff', 'center');
+
+  // 주인공 HP
+  const L = game.leader;
+  const bw = 240;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(14, 22, bw + 4, 20);
+  ctx.fillStyle = COL.hp;
+  ctx.fillRect(16, 24, (bw * Math.max(0, L.hp)) / L.maxHp, 16);
+  ctx.font = 'bold 13px system-ui, sans-serif';
+  label(ctx, `두목 HP ${Math.ceil(Math.max(0, L.hp))} / ${L.maxHp}`, 22, 32);
+
+  ctx.font = 'bold 16px system-ui, sans-serif';
+  label(ctx, `Lv ${game.level}`, 16, 60);
+  label(ctx, `갱 ${game.units.length - 1} / ${MAX_COMPANIONS}`, 80, 60, '#ffd23f');
+  if (game.dead.length) label(ctx, `사망 ${game.dead.length}`, 180, 60, '#ff6b6b');
+
+  label(ctx, `처치 ${game.kills}`, VIEW_W - 16, 32, '#fff', 'right');
+
+  // 알림
+  ctx.font = 'bold 16px system-ui, sans-serif';
+  for (let i = 0; i < game.notices.length; i++) {
+    const n = game.notices[game.notices.length - 1 - i];
+    ctx.globalAlpha = Math.min(1, n.life / 0.5);
+    label(ctx, n.text, VIEW_W / 2, VIEW_H - 40 - i * 24, n.color, 'center');
+  }
+  ctx.globalAlpha = 1;
+
+  if (game.debug.on) drawDebug(ctx, game);
+}
+
+function drawDebug(ctx, game) {
+  const lines = [
+    `FPS ${game.fps.toFixed(0)}`,
+    `적 ${game.enemies.length}  투사체 ${game.projectiles.length}  조각 ${game.gems.length}`,
+    `장판 ${game.zones.length}  연출 ${game.fx.length}  숫자 ${game.texts.length}`,
+    `무적 ${game.debug.invincible ? 'ON' : 'OFF'}`,
+    '[I] 무적  [L] 레벨업  [T] +30초',
+  ];
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(10, VIEW_H - 20 - lines.length * 18, 330, lines.length * 18 + 10);
+  ctx.font = '13px ui-monospace, monospace';
+  lines.forEach((t, i) => label(ctx, t, 18, VIEW_H - 6 - (lines.length - i) * 18 + 9, '#9fe870'));
+}
+
+return { render };
+})();
+
+// ── src/input.js ──
+__mod["src/input.js"] = (() => {
+const BLOCKED = new Set([
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'F1', 'Backquote',
+]);
+
+class Input {
+  constructor() {
+    this.down = new Set();
+    this.pressed = new Set(); // 이번 프레임에 새로 눌린 키
+
+    window.addEventListener('keydown', (e) => {
+      if (BLOCKED.has(e.code)) e.preventDefault();
+      if (!e.repeat) this.pressed.add(e.code);
+      this.down.add(e.code);
+    });
+    window.addEventListener('keyup', (e) => this.down.delete(e.code));
+    window.addEventListener('blur', () => this.down.clear());
+  }
+
+  // 정규화된 이동 방향 (대각선도 속도 1)
+  axis() {
+    const d = this.down;
+    let x = (d.has('KeyD') || d.has('ArrowRight') ? 1 : 0) - (d.has('KeyA') || d.has('ArrowLeft') ? 1 : 0);
+    let y = (d.has('KeyS') || d.has('ArrowDown') ? 1 : 0) - (d.has('KeyW') || d.has('ArrowUp') ? 1 : 0);
+    if (x && y) {
+      x *= Math.SQRT1_2;
+      y *= Math.SQRT1_2;
+    }
+    return { x, y };
+  }
+
+  consume(code) {
+    const had = this.pressed.has(code);
+    this.pressed.delete(code);
+    return had;
+  }
+
+  endFrame() {
+    this.pressed.clear();
+  }
+}
+
+return { Input };
+})();
+
+// ── src/ui.js ──
+__mod["src/ui.js"] = (() => {
+// DOM 오버레이: 타이틀 / 레벨업 선택 / 일시정지 / 결과 화면
+const { TIERS, nominalDps, LEVEL_BONUS_TEXT } = __mod["src/data/weapons.js"];
+const { computeStats } = __mod["src/weapons.js"];
+const { MAX_COMPANIONS, WEAPON_MAX_LEVEL } = __mod["src/config.js"];
+const { formatTime } = __mod["src/util.js"];
+const PICK_LOCK_MS = 250; // 창이 뜨자마자 실수로 고르는 것 방지
+
+class UI {
+  constructor(root) {
+    this.root = root;
+    this.onKey = null;
+    window.addEventListener('keydown', (e) => {
+      if (this.onKey) this.onKey(e);
+    });
+  }
+
+  show(html, onKey) {
+    this.root.innerHTML = html;
+    this.root.classList.add('show');
+    this.onKey = onKey || null;
+  }
+
+  hide() {
+    this.root.classList.remove('show');
+    this.root.innerHTML = '';
+    this.onKey = null;
+  }
+
+  showTitle(onStart) {
+    const t = TIERS;
+    this.show(
+      `<div class="panel">
+        <h1>갱 서바이버</h1>
+        <p class="sub">좀비 떼 속에서 8분을 버텨라. 레벨업마다 동료를 영입해 갱을 키워라.</p>
+        <ul class="help">
+          <li><b>WASD / 방향키</b> 이동 — 공격은 전부 자동</li>
+          <li><b>1 · 2 · 3 / 클릭</b> 선택지 고르기</li>
+          <li><b>ESC</b> 일시정지 · <b>F1</b> 또는 <b>\`</b> 디버그</li>
+        </ul>
+        <p class="odds">무기 등급 확률
+          <span style="color:${t.normal.color}">노멀 70%</span> ·
+          <span style="color:${t.rare.color}">레어 20%</span> ·
+          <span style="color:${t.legendary.color}">전설 10%</span></p>
+        <button class="btn" data-act="start">시작 (Enter)</button>
+      </div>`,
+      (e) => {
+        if (e.code === 'Enter' || e.code === 'Space') onStart();
+      },
+    );
+    this.root.querySelector('[data-act=start]').onclick = onStart;
+  }
+
+  showLevelUp(offer, level, game, onPick) {
+    const heads = {
+      recruit: ['동료를 영입하라', `갱 ${game.units.length - 1} / ${MAX_COMPANIONS}`],
+      upgrade: ['갱이 꽉 찼다 — 무기 강화', '한 명의 무기를 +1레벨'],
+      heal: ['전원 최대 강화 완료', '갱 전원 회복'],
+    };
+    const [title, sub] = heads[offer.kind];
+    const cards = offer.cards.map((c, i) => this.cardHtml(offer.kind, c, i)).join('');
+    this.show(
+      `<div class="panel wide">
+        <h2>Lv ${level} 달성 — ${title}</h2>
+        <p class="sub">${sub}</p>
+        <div class="cards">${cards}</div>
+      </div>`,
+      (e) => {
+        const m = /^(Digit|Numpad)([1-3])$/.exec(e.code);
+        if (m) pick(Number(m[2]) - 1);
+      },
+    );
+    const shownAt = performance.now();
+    let done = false;
+    const pick = (i) => {
+      if (done || i >= offer.cards.length || performance.now() - shownAt < PICK_LOCK_MS) return;
+      done = true;
+      onPick(i);
+    };
+    this.root.querySelectorAll('.card').forEach((el) => {
+      el.onclick = () => pick(Number(el.dataset.i));
+    });
+  }
+
+  cardHtml(kind, c, i) {
+    if (kind === 'recruit') {
+      const t = TIERS[c.def.tier];
+      return `<button class="card" style="--tc:${t.color}" data-i="${i}">
+        <span class="c-key">${i + 1}</span>
+        <span class="c-tier">${t.label}</span>
+        <span class="c-weapon">${c.def.name}</span>
+        <span class="c-name">${c.name}</span>
+        <span class="c-desc">${c.def.desc}</span>
+        <span class="c-dps">DPS ${Math.round(nominalDps(c.def.type, c.def.stats))}</span>
+      </button>`;
+    }
+    if (kind === 'upgrade') {
+      const w = c.unit.weapon;
+      const t = TIERS[w.def.tier];
+      const next = w.level + 1;
+      const before = nominalDps(w.def.type, w.stats);
+      const after = nominalDps(w.def.type, computeStats(w.def, next));
+      const extra = next === 3 || next === 5 ? `<br>+ ${LEVEL_BONUS_TEXT[w.def.type]}` : '';
+      return `<button class="card" style="--tc:${t.color}" data-i="${i}">
+        <span class="c-key">${i + 1}</span>
+        <span class="c-tier">${t.label} · Lv ${w.level} → ${next}</span>
+        <span class="c-weapon">${w.def.name}</span>
+        <span class="c-name">${c.unit.name}</span>
+        <span class="c-desc">피해 +25%${extra}</span>
+        <span class="c-dps">DPS ${Math.round(before)} → ${Math.round(after)}</span>
+      </button>`;
+    }
+    return `<button class="card" style="--tc:#7bd88f" data-i="${i}">
+      <span class="c-key">1</span>
+      <span class="c-tier">회복</span>
+      <span class="c-weapon">응급처치</span>
+      <span class="c-desc">갱 전원 HP 30% 회복</span>
+    </button>`;
+  }
+
+  rosterRows(units, showDamage) {
+    return units
+      .map((u, i) => {
+        const w = u.weapon;
+        const t = TIERS[w.def.tier];
+        const hp = u.alive ? `${Math.ceil(u.hp)} / ${u.maxHp}` : '<span class="dead">사망</span>';
+        const dmg = showDamage ? `<td class="num">${Math.round(u.dmgDealt).toLocaleString()}</td>` : '';
+        const rank = showDamage ? `<td class="num">${i + 1}</td>` : '';
+        return `<tr>${rank}<td>${u.name}</td>
+          <td style="color:${t.color}">${w.def.name} <small>${t.label}</small></td>
+          <td class="num">Lv ${w.level}${w.level >= WEAPON_MAX_LEVEL ? ' (MAX)' : ''}</td>
+          <td class="num">${hp}</td>${dmg}</tr>`;
+      })
+      .join('');
+  }
+
+  showPause(game, onResume) {
+    this.show(
+      `<div class="panel wide">
+        <h2>일시정지</h2>
+        <p class="sub">${formatTime(game.time)} 경과 · Lv ${game.level} · 처치 ${game.kills}</p>
+        <table class="roster">
+          <tr><th>이름</th><th>무기</th><th>레벨</th><th>HP</th></tr>
+          ${this.rosterRows([...game.units, ...game.dead], false)}
+        </table>
+        <button class="btn" data-act="resume">계속 (ESC)</button>
+      </div>`,
+    );
+    this.root.querySelector('[data-act=resume]').onclick = onResume;
+  }
+
+  showResult(game, victory, onRestart) {
+    const ranked = [...game.roster].sort((a, b) => b.dmgDealt - a.dmgDealt);
+    const mvp = ranked[0];
+    this.show(
+      `<div class="panel wide">
+        <h1 class="${victory ? 'win' : 'lose'}">${victory ? '생존 성공!' : '두목 사망'}</h1>
+        <p class="sub">생존 ${formatTime(game.time)} · Lv ${game.level} · 처치 ${game.kills} ·
+          동료 ${game.units.length - 1}명 생존 / ${game.dead.length}명 사망</p>
+        <p class="mvp">MVP — <b>${mvp.name}</b> (${mvp.weapon.def.name})</p>
+        <table class="roster">
+          <tr><th>#</th><th>이름</th><th>무기</th><th>레벨</th><th>HP</th><th>누적 피해</th></tr>
+          ${this.rosterRows(ranked, true)}
+        </table>
+        <button class="btn" data-act="restart">다시 하기 (Enter)</button>
+      </div>`,
+      (e) => {
+        if (e.code === 'Enter') onRestart();
+      },
+    );
+    this.root.querySelector('[data-act=restart]').onclick = onRestart;
+  }
+}
+
+return { UI };
+})();
+
+// ── src/main.js ──
+__mod["src/main.js"] = (() => {
+const { VIEW_W, STEP } = __mod["src/config.js"];
+const { Game } = __mod["src/game.js"];
+const { render } = __mod["src/render.js"];
+const { Input } = __mod["src/input.js"];
+const { UI } = __mod["src/ui.js"];
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const ui = new UI(document.getElementById('overlay'));
+const input = new Input();
+const game = new Game(ui, input);
+window.__game = game; // 콘솔 디버깅용
+
+// 화면 크기 × devicePixelRatio에 맞춰 캔버스 해상도를 잡아서 고해상도에서도 선명하게
+let scale = 1;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  scale = (canvas.clientWidth * dpr) / VIEW_W;
+  canvas.width = Math.round(canvas.clientWidth * dpr);
+  canvas.height = Math.round(canvas.clientHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+window.addEventListener('blur', () => game.pause());
+
+ui.showTitle(() => game.start());
+
+// 고정 타임스텝: 업데이트는 항상 1/60초 단위, 렌더는 모니터 주사율대로
+let last = performance.now();
+let acc = 0;
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.25) dt = 0.25; // 탭 전환 후 복귀 시 폭주 방지
+  if (dt > 0) game.fps += (1 / dt - game.fps) * 0.05;
+
+  game.handleInput();
+  acc += dt;
+  while (acc >= STEP) {
+    game.update(STEP);
+    acc -= STEP;
+  }
+  render(ctx, game, scale);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+return {  };
+})();
+})();
+</script>
+</body>
+</html>

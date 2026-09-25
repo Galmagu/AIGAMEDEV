@@ -5,15 +5,23 @@
 
 ## 실행
 
-ES 모듈을 쓰기 때문에 `index.html`을 더블클릭(`file://`)하면 CORS 에러로 안 뜬다. 로컬 서버로 연다.
+**가장 쉬운 방법**: [`dist/gang-survivor.html`](dist/gang-survivor.html) 파일 하나만 받아서 더블클릭. 서버도 설치도 필요 없다.
+(GitHub에서 파일 열고 우측 상단 Download raw file 버튼)
+
+### 개발할 때
+
+`src/`를 고치면서 바로 확인하려면 로컬 서버로 `index.html`을 연다.
+ES 모듈이라 `index.html`을 더블클릭(`file://`)하면 CORS 에러로 안 뜬다.
 
 ```bash
-python3 -m http.server 8000
-# 또는
-npx serve .
+python3 -m http.server 8000   # → http://localhost:8000
 ```
 
-브라우저에서 http://localhost:8000 접속.
+고친 내용을 단일 파일에 반영하려면:
+
+```bash
+node tools/build.mjs          # → dist/gang-survivor.html 갱신
+```
 
 ## 조작
 
@@ -43,6 +51,8 @@ src/
   util.js
   data/weapons.js   무기 15종 정의, 티어 확률
   data/names.js     동료 별명 생성
+tools/build.mjs     src/를 단일 HTML로 묶는 빌드 스크립트 (의존성 없음)
+dist/               빌드 결과 (더블클릭 실행용)
 ```
 
 밸런싱은 `src/config.js`와 `src/data/weapons.js`의 숫자만 고치면 된다.
