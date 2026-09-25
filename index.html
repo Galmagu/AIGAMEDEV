@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>갱 서바이버</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #0e0f12; color: #eee;
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  /* 16:9 무대를 화면에 꽉 맞춘다. 오버레이 글자 크기는 무대 기준(cqw)으로 */
+  #stage {
+    position: absolute; inset: 0; margin: auto;
+    width: min(100vw, calc(100vh * 16 / 9));
+    height: min(100vh, calc(100vw * 9 / 16));
+    container-type: size;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  #overlay {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(8, 9, 12, 0.72);
+    font-size: 1.25cqw;
+  }
+  #overlay.show { display: flex; }
+
+  .panel { text-align: center; max-width: 60cqw; }
+  .panel.wide { max-width: 90cqw; }
+  h1 { font-size: 4.2cqw; margin: 0 0 0.6cqw; color: #ffd23f; letter-spacing: 0.1cqw; }
+  h1.win { color: #7bd88f; }
+  h1.lose { color: #ff6b6b; }
+  h2 { font-size: 2.4cqw; margin: 0 0 0.4cqw; color: #ffd23f; }
+  .sub { color: #aab; margin: 0 0 1.6cqw; }
+  .help { list-style: none; padding: 0; margin: 0 0 1.4cqw; line-height: 1.9; }
+  .help b { color: #ffd23f; }
+  .odds { margin: 0 0 2cqw; color: #aab; }
+  .mvp { margin: 0 0 1cqw; }
+  .mvp b { color: #ffd23f; }
+
+  .btn {
+    font: inherit; font-weight: 700; font-size: 1.4cqw;
+    padding: 0.8cqw 2.4cqw; margin-top: 1.4cqw;
+    border: 0.15cqw solid #ffd23f; border-radius: 0.6cqw;
+    background: #2a2410; color: #ffd23f; cursor: pointer;
+  }
+  .btn:hover { background: #3a3214; }
+
+  .cards { display: flex; gap: 1.8cqw; justify-content: center; }
+  .card {
+    position: relative; width: 20cqw; min-height: 22cqw;
+    display: flex; flex-direction: column; align-items: center; gap: 0.7cqw;
+    padding: 2cqw 1.4cqw 1.6cqw;
+    font: inherit; color: #eee; text-align: center;
+    background: #1c1f26; border: 0.25cqw solid var(--tc); border-radius: 1cqw;
+    box-shadow: 0 0 1.6cqw color-mix(in srgb, var(--tc) 35%, transparent);
+    cursor: pointer; transition: transform 0.08s;
+  }
+  .card:hover { transform: translateY(-0.5cqw); }
+  .c-key {
+    position: absolute; top: 0.6cqw; left: 0.8cqw;
+    font-weight: 700; color: #778;
+  }
+  .c-tier { font-weight: 700; color: var(--tc); letter-spacing: 0.1cqw; }
+  .c-weapon { font-size: 2.2cqw; font-weight: 800; }
+  .c-name { color: #ffd23f; }
+  .c-desc { color: #aab; flex: 1; line-height: 1.5; }
+  .c-dps { font-weight: 700; color: var(--tc); }
+
+  .roster { margin: 0 auto; border-collapse: collapse; font-size: 1.1cqw; }
+  .roster th { color: #889; font-weight: 600; padding: 0.3cqw 1cqw; border-bottom: 1px solid #333; }
+  .roster td { padding: 0.25cqw 1cqw; text-align: left; }
+  .roster td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .roster small { color: #778; }
+  .dead { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="overlay"></div>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
